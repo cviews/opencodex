@@ -1,5 +1,5 @@
 {
-  "name": "@zmn-codex/app",
+  "name": "@opencodex/app",
   "private": true,
   "version": "0.0.1",
   "type": "module",
@@ -20,8 +20,8 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-unicode11": "^0.9.0",
     "@xterm/xterm": "^6.0.0",
-    "@zmn-codex/types": "workspace:*",
-    "@zmn-codex/ui": "workspace:*",
+    "@opencodex/types": "workspace:*",
+    "@opencodex/ui": "workspace:*",
     "class-variance-authority": "^0.7.1",
     "dompurify": "^3.4.5",
     "highlight.js": "^11.11.1",

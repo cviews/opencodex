@@ -1,4 +1,4 @@
-import type { Message } from '@zmn-codex/types';
+import type { Message } from '@opencodex/types';
 import { opencodeMessage } from './opencodeAdapter';
 import { isTeammateBootstrapContent } from '../thread/displayContent';
 import { useMessageStore } from '../stores/message';

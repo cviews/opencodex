@@ -1,5 +1,5 @@
 {
-  "name": "@zmn-codex/server",
+  "name": "@opencodex/server",
   "version": "0.0.1",
   "type": "module",
   "main": "src/index.ts",
@@ -13,7 +13,7 @@
     "express": "^5.1.0",
     "cors": "^2.8.5",
     "zod": "^3.25.0",
-    "@zmn-codex/types": "workspace:*"
+    "@opencodex/types": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.8.3",

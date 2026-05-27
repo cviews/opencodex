@@ -1,4 +1,4 @@
-import type { Message } from '@zmn-codex/types';
+import type { Message } from '@opencodex/types';
 import type { ToolCall } from '../types';
 import { isTeammateBootstrapContent } from './displayContent';
 import { buildUserMessageDisplayText, extractFilePathsFromParts } from './composer/promptParts';

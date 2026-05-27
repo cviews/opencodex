@@ -23,7 +23,7 @@ if [[ -z "$pids" ]]; then
 fi
 
 count=$(echo "$pids" | wc -l | tr -d ' ')
-echo "[zmn-codex] Stopping ${count} opencode-team serve process(es)"
+echo "[zmn] Stopping ${count} opencode-team serve process(es)"
 # shellcheck disable=SC2086
 kill_pids TERM $pids
 sleep 0.4

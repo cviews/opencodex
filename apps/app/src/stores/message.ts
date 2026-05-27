@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Message } from '@zmn-codex/types';
+import type { Message } from '@opencodex/types';
 import type { ToolCall } from '../types';
 import { opencodeMessage, opencodeSession, opencodeTeam } from '../services/opencodeAdapter';
 import { handleTeamMessageToolSuccess } from '../services/teamMemberExecution';

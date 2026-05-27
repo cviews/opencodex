@@ -1,4 +1,4 @@
-import type { Session } from '@zmn-codex/types';
+import type { Session } from '@opencodex/types';
 import type { PendingQuestion } from '../types';
 import type { SubAgentItem } from '../types';
 

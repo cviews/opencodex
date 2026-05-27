@@ -7,8 +7,8 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
-      '@zmn-codex/ui': path.resolve(__dirname, '../../packages/ui/src/index.ts'),
-      '@zmn-codex/types': path.resolve(__dirname, '../../packages/types/src/index.ts'),
+      '@opencodex/ui': path.resolve(__dirname, '../../packages/ui/src/index.ts'),
+      '@opencodex/types': path.resolve(__dirname, '../../packages/types/src/index.ts'),
     },
   },
 });

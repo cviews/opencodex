@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Session } from '@zmn-codex/types';
+import type { Session } from '@opencodex/types';
 import type { SubAgentItem } from '../types';
 import { opencodeSession } from '../services/opencodeAdapter';
 import { on, EventType, extractEventPayload } from '../sdk/eventRouter';

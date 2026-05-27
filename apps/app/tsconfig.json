@@ -13,8 +13,8 @@
     "outDir": "dist",
     "baseUrl": ".",
     "paths": {
-      "@zmn-codex/ui": ["../../packages/ui/src/index.ts"],
-      "@zmn-codex/types": ["../../packages/types/src/index.ts"]
+      "@opencodex/ui": ["../../packages/ui/src/index.ts"],
+      "@opencodex/types": ["../../packages/types/src/index.ts"]
     }
   },
   "include": ["src"],

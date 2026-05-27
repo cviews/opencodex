@@ -32,6 +32,12 @@ importers:
       '@opencode-ai/sdk':
         specifier: ^1.15.5
         version: 1.15.5
+      '@opencodex/types':
+        specifier: workspace:*
+        version: link:../../packages/types
+      '@opencodex/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
       '@tanstack/react-query':
         specifier: ^5.81.0
         version: 5.100.11(react@19.2.6)
@@ -47,12 +53,6 @@ importers:
       '@xterm/xterm':
         specifier: ^6.0.0
         version: 6.0.0
-      '@zmn-codex/types':
-        specifier: workspace:*
-        version: link:../../packages/types
-      '@zmn-codex/ui':
-        specifier: workspace:*
-        version: link:../../packages/ui
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -151,7 +151,7 @@ importers:
 
   packages/server:
     dependencies:
-      '@zmn-codex/types':
+      '@opencodex/types':
         specifier: workspace:*
         version: link:../types
       cors:

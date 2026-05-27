@@ -1,6 +1,6 @@
 export const en: Record<string, string> = {
   // App
-  'app.title': 'ZMN OpenCodex Desktop',
+  'app.title': 'OpenCodex',
   'app.loading': 'Loading...',
 
   // Engine status

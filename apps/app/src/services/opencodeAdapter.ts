@@ -48,7 +48,7 @@ import type {
   TeamEvent,
   MemberMessage,
 } from '../types';
-import type { Session, Message } from '@zmn-codex/types';
+import type { Session, Message } from '@opencodex/types';
 import {
   MOCK_PROJECTS,
   MOCK_PROVIDERS,

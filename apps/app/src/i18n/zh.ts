@@ -1,6 +1,6 @@
 export const zh: Record<string, string> = {
   // App
-  'app.title': 'ZMN OpenCodex Desktop',
+  'app.title': 'OpenCodex',
   'app.loading': '\u52a0\u8f7d\u4e2d...',
 
   // Engine status

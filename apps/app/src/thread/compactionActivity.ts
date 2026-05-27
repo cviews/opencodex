@@ -1,4 +1,4 @@
-import type { Message } from '@zmn-codex/types';
+import type { Message } from '@opencodex/types';
 import type { ActivityStep } from './activitySteps';
 
 export interface CompactionActivity {

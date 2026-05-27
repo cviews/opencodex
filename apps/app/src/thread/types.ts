@@ -1,4 +1,4 @@
-import type { Message } from '@zmn-codex/types';
+import type { Message } from '@opencodex/types';
 import type { MessageCard, ToolCall } from '../types';
 
 export type { MessageCard, ToolCall };

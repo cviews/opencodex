@@ -5,7 +5,7 @@ import { ActivityRail } from './ActivityRail';
 import { AssistantMessageBody } from './AssistantMessageBody';
 import type { ActivityStep } from './activitySteps';
 import { UserMessageContent } from './UserMessageContent';
-import { getUserMessageDisplay } from './displayContent';
+import { getUserMessageDisplay, getUserMessageCopyText } from './displayContent';
 import type { ChatMessage } from './types';
 
 interface MessageItemProps {
@@ -43,7 +43,11 @@ function ActionBar({
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(getUserMessageDisplay(message));
+    const text =
+      message.role === 'user'
+        ? getUserMessageCopyText(message)
+        : (message.content ?? '');
+    navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   };

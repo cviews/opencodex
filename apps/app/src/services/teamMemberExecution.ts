@@ -84,7 +84,7 @@ export async function ensureTeamMemberExecutes(
 
   if (trimmedBody && !messageBodyPresent(messages, trimmedBody)) {
     try {
-      await opencodeMessage.sendMessage(sessionId, trimmedBody, undefined, {
+      await opencodeMessage.sendMessage(sessionId, trimmedBody, {
         agent: member.agentId || member.name,
       });
       markMemberWorking(member);

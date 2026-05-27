@@ -54,8 +54,8 @@ function enrichUserMessageDisplay(msg: Message, sessionId: string, consumePendin
 
   const pending = consumePending ? takePendingDisplay(sessionId) : undefined;
   const displayContent =
-    msg.displayContent ??
     pending ??
+    msg.displayContent ??
     (() => {
       const sanitized = sanitizeUserMessageDisplay(msg.content ?? '');
       return sanitized !== (msg.content ?? '') ? sanitized : undefined;
@@ -608,11 +608,25 @@ interface MessageState {
   dispatchOutgoingMessage: (
     sessionId: string,
     content: string,
-    options?: { agent?: string; displayContent?: string },
+    options?: {
+      agent?: string;
+      displayContent?: string;
+      modelRef?: string;
+      promptAttachments?: { images: File[]; filePaths: string[] };
+    },
   ) => Promise<void>;
   cancelOutgoingMessage: (sessionId: string) => void;
   migrateOutgoingSession: (fromSessionId: string, toSessionId: string) => void;
-  sendMessage: (sessionId: string, content: string, options?: { agent?: string; displayContent?: string }) => Promise<void>;
+  sendMessage: (
+    sessionId: string,
+    content: string,
+    options?: {
+      agent?: string;
+      displayContent?: string;
+      modelRef?: string;
+      promptAttachments?: { images: File[]; filePaths: string[] };
+    },
+  ) => Promise<void>;
   abortSession: (sessionId: string) => Promise<void>;
   clearMessages: () => void;
   setLoading: (loading: boolean) => void;
@@ -906,10 +920,15 @@ export const useMessageStore = create<MessageState>((set, get) => {
   dispatchOutgoingMessage: async (
     sessionId: string,
     content: string,
-    options?: { agent?: string; displayContent?: string },
+    options?: {
+      agent?: string;
+      displayContent?: string;
+      modelRef?: string;
+      promptAttachments?: { images: File[]; filePaths: string[] };
+    },
   ) => {
     try {
-      await opencodeMessage.sendMessage(sessionId, content, undefined, options);
+      await opencodeMessage.sendMessage(sessionId, content, options);
       pipelineMark(sessionId, 'dispatch.done', {});
     } catch (e) {
       pipelineMark(sessionId, 'dispatch.error', {

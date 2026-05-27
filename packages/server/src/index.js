@@ -12,5 +12,5 @@ app.use('/global', healthRouter);
 app.use('/session', sessionRouter);
 app.use('/events', sseRouter);
 app.listen(SERVER_PORT, SERVER_HOST, () => {
-    console.log(`[zmn-codex-server] Listening on http://${SERVER_HOST}:${SERVER_PORT}`);
+    console.log(`[zmn-opencodex-server] Listening on http://${SERVER_HOST}:${SERVER_PORT}`);
 });

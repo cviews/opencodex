@@ -18,6 +18,7 @@ import { debugWarn, debugError, debugLog } from '../utils/debugLog';
 import { questionLog, questionWarn } from '../utils/questionDebug';
 import { isPendingSessionId } from '../utils/pendingSession';
 import { setCachedDefaultModelRef } from '../thread/composer/defaultModelRef';
+import { parseModelRef } from '../thread/composer/models';
 import {
   getCachedTeamBySession,
   invalidateTeamBySessionCache,
@@ -187,7 +188,7 @@ async function fetchSlashAndSkillCatalog(client: NonNullable<ReturnType<typeof g
     catalog.projectCommandNames,
   );
   const skillRecords = mapCatalogToSkillRecords(slashItems, catalog.skills, catalog.commands);
-  return { slashItems, skillRecords, commands: catalog.commands, ...catalog };
+  return { slashItems, skillRecords, ...catalog };
 }
 
 /** OpenCode session todos use `content`, not `title`. */
@@ -1946,6 +1947,7 @@ export const opencodeSettings = {
   },
 
   setDefaultModel: async (_modelId: string): Promise<boolean> => {
+    setCachedDefaultModelRef(_modelId);
     return sdkCall(async () => {
       await getClient()!.config.update({ config: { model: _modelId } as never });
       return true;
@@ -2366,7 +2368,16 @@ export const opencodeMessage = {
     });
   },
 
-  sendMessage: async (sessionId: string, content: string, _attachments?: File[], options?: { agent?: string }): Promise<boolean> => {
+  sendMessage: async (
+    sessionId: string,
+    content: string,
+    options?: {
+      agent?: string;
+      displayContent?: string;
+      modelRef?: string;
+      promptAttachments?: { images: File[]; filePaths: string[] };
+    },
+  ): Promise<boolean> => {
     if (!isSDKConnected()) {
       throw new Error('未连接到 OpenCode 服务，无法发送消息');
     }
@@ -2440,22 +2451,43 @@ export const opencodeMessage = {
         });
       }
 
+      const { buildPromptParts } = await import('../thread/composer/promptParts');
+      const promptParts = await buildPromptParts({
+        text: content,
+        attachments: {
+          images: options?.promptAttachments?.images ?? [],
+          filePaths: options?.promptAttachments?.filePaths ?? [],
+        },
+        directory: directory ?? '',
+      });
+
       const promptArgs: {
         sessionID: string;
         directory?: string;
-        parts: Array<{ type: 'text'; text: string }>;
+        parts: Awaited<ReturnType<typeof buildPromptParts>>;
         agent?: string;
+        model?: { providerID: string; modelID: string };
       } = {
         sessionID: sessionId,
         directory,
-        parts: [{ type: 'text', text: content }],
+        parts: promptParts,
       };
       if (options?.agent) {
         promptArgs.agent = options.agent;
       }
+      const parsedModel = parseModelRef(options?.modelRef);
+      if (parsedModel?.providerId && parsedModel.modelId) {
+        promptArgs.model = {
+          providerID: parsedModel.providerId,
+          modelID: parsedModel.modelId,
+        };
+      }
       pipelineMark(sessionId, 'adapter.prompt.request', {
         agent: options?.agent,
+        model: promptArgs.model ? `${promptArgs.model.providerID}/${promptArgs.model.modelID}` : undefined,
         textLen: content.length,
+        attachmentCount: (options?.promptAttachments?.images.length ?? 0)
+          + (options?.promptAttachments?.filePaths.length ?? 0),
         mode: 'async',
       });
       const result = await client.session.promptAsync(promptArgs);

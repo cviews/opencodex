@@ -1,6 +1,7 @@
 import type { LexicalEditor, LexicalNode } from 'lexical';
 import { $getRoot, $isParagraphNode, $isTextNode } from 'lexical';
 import { $isSlashCommandNode, $isMentionNode, $isModelChipNode } from './nodes';
+import { referenceToken } from './referenceChip';
 
 function serializeNode(node: LexicalNode): string {
   if ($isSlashCommandNode(node)) {
@@ -12,6 +13,12 @@ function serializeNode(node: LexicalNode): string {
     }
     if (node.__kind === 'agent') {
       return `@agent ${node.__label}`;
+    }
+    if (node.__kind === 'file' && node.__filePath) {
+      return referenceToken(node.__refKind ?? 'file', node.__label);
+    }
+    if (node.__kind === 'file') {
+      return referenceToken('file', node.__label);
     }
     return `@${node.__label}`;
   }

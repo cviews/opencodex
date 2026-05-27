@@ -8,6 +8,7 @@ import { ProviderQuotaBadge } from './ProviderQuotaBadge';
 import { ProviderQuotaTooltip } from './ProviderQuotaTooltip';
 import { supportsProviderQuota } from './providerQuotaUtils';
 import { setModelProviders } from './models';
+import { setCachedDefaultModelRef } from './defaultModelRef';
 
 function useDropDirection(ref: React.RefObject<HTMLElement | null>, isOpen: boolean): boolean {
   const [dropUp, setDropUp] = useState(true);
@@ -129,6 +130,7 @@ export function ProviderModelControls() {
 
   const persistModel = async (provider: ProviderOption, model: { id: string; label: string }) => {
     const modelRef = `${provider.id}/${model.id}`;
+    setCachedDefaultModelRef(modelRef);
     await opencodeProvider.setModel(provider.id, model.id);
     await opencodeSettings.setDefaultModel(modelRef);
   };

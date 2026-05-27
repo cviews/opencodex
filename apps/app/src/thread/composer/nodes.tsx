@@ -1,5 +1,11 @@
 import type { EditorConfig, NodeKey, SerializedLexicalNode, TextModeType } from 'lexical';
 import { TextNode } from 'lexical';
+import {
+  applyReferenceChipDom,
+  inferReferenceKindFromPath,
+  referenceToken,
+  type ReferenceKind,
+} from './referenceChip';
 
 type MentionKind = 'agent' | 'file' | 'team';
 
@@ -95,6 +101,8 @@ export function $createSlashCommandNode(label: string): SlashCommandNode {
 export interface SerializedMentionNode extends SerializedLexicalNode {
   label: string;
   kind: MentionKind;
+  filePath?: string;
+  refKind?: ReferenceKind;
   text: string;
   detail: number;
   format: number;
@@ -105,27 +113,43 @@ export interface SerializedMentionNode extends SerializedLexicalNode {
 export class MentionNode extends TextNode {
   __label: string;
   __kind: MentionKind;
+  __filePath?: string;
+  __refKind?: ReferenceKind;
 
   static getType(): string {
     return 'mention';
   }
 
   static clone(node: MentionNode): MentionNode {
-    return new MentionNode(node.__label, node.__kind, node.__key);
+    return new MentionNode(node.__label, node.__kind, node.__filePath, node.__refKind, node.__key);
   }
 
   static importJSON(serialized: SerializedMentionNode): MentionNode {
-    return $createMentionNode(serialized.label, serialized.kind);
+    return $createMentionNode(serialized.label, serialized.kind, serialized.filePath, serialized.refKind);
   }
 
-  constructor(label: string = '', kind: MentionKind = 'agent', key?: NodeKey) {
+  constructor(
+    label: string = '',
+    kind: MentionKind = 'agent',
+    filePath?: string,
+    refKind?: ReferenceKind,
+    key?: NodeKey,
+  ) {
     super(`@${label}`, key);
     this.__label = label;
     this.__kind = kind;
+    this.__filePath = filePath;
+    this.__refKind = refKind;
   }
 
 createDOM(config: EditorConfig): HTMLElement {
     const dom = super.createDOM(config);
+    if (this.__kind === 'file' && (this.__filePath || this.__refKind)) {
+      applyReferenceChipDom(dom, this.__refKind ?? inferReferenceKindFromPath(this.__filePath ?? this.__label), this.__label);
+      dom.contentEditable = 'false';
+      dom.setAttribute('data-lexical-chip', this.__key);
+      return dom;
+    }
     const isAgent = this.__kind === 'agent';
     const isTeam = this.__kind === 'team';
     dom.className = 'inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium select-none';
@@ -155,6 +179,10 @@ dom.innerHTML = icon + this.__label;
 
   updateDOM(_prevNode: MentionNode, dom: HTMLElement): boolean {
     dom.setAttribute('data-lexical-chip', this.__key);
+    if (this.__kind === 'file' && (this.__filePath || this.__refKind)) {
+      applyReferenceChipDom(dom, this.__refKind ?? inferReferenceKindFromPath(this.__filePath ?? this.__label), this.__label);
+      return false;
+    }
     const isAgent = this.__kind === 'agent';
     const isTeam = this.__kind === 'team';
     if (isAgent) {
@@ -196,6 +224,8 @@ dom.innerHTML = icon + this.__label;
       type: 'mention',
       kind: this.__kind,
       label: this.__label,
+      ...(this.__filePath ? { filePath: this.__filePath } : {}),
+      ...(this.__refKind ? { refKind: this.__refKind } : {}),
       text: this.getTextContent(),
       detail: this.__detail,
       format: this.__format,
@@ -206,6 +236,15 @@ dom.innerHTML = icon + this.__label;
   }
 
   getTextContent(): string {
+    if (this.__kind === 'file' && this.__filePath) {
+      return referenceToken(this.__refKind ?? 'file', this.__label);
+    }
+    if (this.__kind === 'team') {
+      return `@team ${this.__label}`;
+    }
+    if (this.__kind === 'agent') {
+      return `@agent ${this.__label}`;
+    }
     return `@${this.__label}`;
   }
 }
@@ -214,8 +253,20 @@ export function $isMentionNode(node: unknown): node is MentionNode {
   return node instanceof MentionNode;
 }
 
-export function $createMentionNode(label: string, kind: MentionKind): MentionNode {
-  return new MentionNode(label, kind);
+export function $createMentionNode(
+  label: string,
+  kind: MentionKind,
+  filePath?: string,
+  refKind?: ReferenceKind,
+): MentionNode {
+  return new MentionNode(label, kind, filePath, refKind);
+}
+
+export function $createFileReferenceNode(fullPath: string, refKind?: ReferenceKind): MentionNode {
+  const normalized = fullPath.trim();
+  const label = normalized.replace(/\\/g, '/').split('/').pop() || normalized;
+  const kind = refKind ?? inferReferenceKindFromPath(normalized);
+  return new MentionNode(label, 'file', normalized, kind);
 }
 
 // ─── SkillChipNode (legacy, kept for compatibility) ────────────

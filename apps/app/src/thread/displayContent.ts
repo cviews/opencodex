@@ -1,3 +1,6 @@
+import { serializeDisplayContentForCopy } from './displayTokens';
+import { extractFilePathsFromParts } from './composer/promptParts';
+
 /** Teammate spawn context injected as a synthetic user message — hide in chat UI. */
 export function isTeammateBootstrapContent(content: string): boolean {
   if (!content) return false;
@@ -79,4 +82,14 @@ export function getUserMessageDisplay(message: { content?: string; displayConten
   const raw = message.content ?? '';
   const sanitized = sanitizeUserMessageDisplay(raw);
   return sanitized || raw;
+}
+
+/** Clipboard text for user messages — preserves reference tokens + paths for paste round-trip. */
+export function getUserMessageCopyText(message: {
+  content?: string;
+  displayContent?: string;
+  parts?: unknown[];
+}): string {
+  const filePaths = extractFilePathsFromParts(message.parts);
+  return serializeDisplayContentForCopy(getUserMessageDisplay(message), filePaths);
 }

@@ -1,22 +1,28 @@
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
-import type { LexicalEditor, TextNode } from 'lexical';
+import type { LexicalEditor, TextNode, ElementNode, ParagraphNode, LexicalNode } from 'lexical';
 import { getModelLabel, MODEL_PROVIDERS } from './models';
 import {
   $getSelection,
   $isRangeSelection,
   $isTextNode,
   $isElementNode,
+  $isParagraphNode,
   COMMAND_PRIORITY_HIGH,
   KEY_BACKSPACE_COMMAND,
   KEY_ARROW_LEFT_COMMAND,
   KEY_ARROW_RIGHT_COMMAND,
   KEY_ENTER_COMMAND,
+  PASTE_COMMAND,
   $createParagraphNode,
   $createTextNode,
   $getRoot,
 } from 'lexical';
 import { useEffect, useRef } from 'react';
-import { $isChipNode, $createMentionNode, $createSlashCommandNode, $createModelChipNode, $isModelChipNode } from './nodes';
+import { parseDisplaySegments, type DisplaySegment } from '../displayTokens';
+import { inferReferenceKindFromPath } from './referenceChip';
+import { isAbsoluteFilesystemPath } from './promptParts';
+import { $isChipNode, $createMentionNode, $createFileReferenceNode, $createSlashCommandNode, $createModelChipNode, $isModelChipNode, $isMentionNode } from './nodes';
+import type { ReferenceKind } from './referenceChip';
 
 export function extractModelIdFromEditor(editor: LexicalEditor): string | null {
   return editor.getEditorState().read(() => {
@@ -437,6 +443,73 @@ export function SyncPlugin({ draft }: { draft: string }): null {
   return null;
 }
 
+export function EditorCapturePlugin({
+  onEditorReady,
+}: {
+  onEditorReady: (editor: LexicalEditor) => void;
+}): null {
+  const [editor] = useLexicalComposerContext();
+
+  useEffect(() => {
+    onEditorReady(editor);
+  }, [editor, onEditorReady]);
+
+  return null;
+}
+
+export function insertFileReferenceAtCursor(
+  editor: LexicalEditor,
+  fullPath: string,
+  refKind?: ReferenceKind,
+): void {
+  const normalized = fullPath.trim();
+  if (!normalized) return;
+
+  editor.update(() => {
+    const root = $getRoot();
+    let targetParagraph = root.getLastChild();
+    if (!$isParagraphNode(targetParagraph)) {
+      targetParagraph = $createParagraphNode();
+      root.append(targetParagraph);
+    }
+    const paragraph = targetParagraph as ParagraphNode;
+
+    const mentionNode = $createFileReferenceNode(normalized, refKind);
+    const trailingSpace = $createTextNode(' ');
+    const selection = $getSelection();
+
+    if ($isRangeSelection(selection) && selection.anchor.type === 'text') {
+      selection.insertNodes([mentionNode, trailingSpace]);
+    } else {
+      paragraph.append(mentionNode);
+      paragraph.append(trailingSpace);
+    }
+    trailingSpace.select();
+  });
+  editor.focus();
+}
+
+export function extractFilePathsFromEditor(editor: LexicalEditor): string[] {
+  return editor.getEditorState().read(() => {
+    const paths: string[] = [];
+    const root = $getRoot();
+    for (const paragraph of root.getChildren()) {
+      if (!$isElementNode(paragraph)) continue;
+      for (const child of paragraph.getChildren()) {
+        if ($isMentionNode(child) && child.__kind === 'file' && child.__filePath) {
+          paths.push(child.__filePath);
+        }
+      }
+    }
+    return paths;
+  });
+}
+
+/** @deprecated Use insertFileReferenceAtCursor */
+export function insertFilePathAtCursor(editor: LexicalEditor, filePath: string, refKind?: ReferenceKind): void {
+  insertFileReferenceAtCursor(editor, filePath, refKind);
+}
+
 export function insertMention(editor: LexicalEditor, label: string, kind: 'agent' | 'file' | 'team'): void {
   editor.update(() => {
     const selection = $getSelection();
@@ -472,6 +545,34 @@ export function insertMention(editor: LexicalEditor, label: string, kind: 'agent
     cursor.select(0, 0);
 
     anchorNode.remove();
+  });
+}
+
+export function clearMentionTrigger(editor: LexicalEditor): void {
+  editor.update(() => {
+    const selection = $getSelection();
+    if (!$isRangeSelection(selection)) return;
+
+    const anchorNode = selection.anchor.getNode();
+    if (!$isTextNode(anchorNode)) return;
+
+    const fullText = anchorNode.getTextContent();
+    const offset = selection.anchor.offset;
+    const textBeforeCursor = fullText.slice(0, offset);
+    const textAfterCursor = fullText.slice(offset);
+
+    const atMatch = textBeforeCursor.match(/^( *)@\S*$/);
+    if (!atMatch) return;
+
+    const leadingSpaces = atMatch[1];
+    const newText = (leadingSpaces || '') + textAfterCursor;
+    if (newText.trim()) {
+      anchorNode.setTextContent(newText);
+      const newOffset = leadingSpaces ? leadingSpaces.length : 0;
+      anchorNode.select(newOffset, newOffset);
+    } else {
+      anchorNode.remove();
+    }
   });
 }
 
@@ -684,6 +785,94 @@ export function clearEditor(editor: LexicalEditor): void {
   });
 }
 
+function segmentsToLexicalNodes(segments: DisplaySegment[]): LexicalNode[] {
+  const nodes: LexicalNode[] = [];
+  for (const segment of segments) {
+    if (segment.type === 'text') {
+      if (segment.value) {
+        nodes.push($createTextNode(segment.value));
+      }
+      continue;
+    }
+    if (segment.type === 'reference') {
+      const path = segment.value;
+      const kind = isAbsoluteFilesystemPath(path)
+        ? inferReferenceKindFromPath(path)
+        : segment.kind;
+      nodes.push($createFileReferenceNode(path, kind));
+      continue;
+    }
+    if (segment.kind === 'skill') {
+      nodes.push($createSlashCommandNode(segment.value));
+      continue;
+    }
+    if (segment.kind === 'model') {
+      nodes.push($createModelChipNode(segment.value, getModelLabel(segment.value) || segment.value));
+      continue;
+    }
+    if (segment.kind === 'team') {
+      nodes.push($createMentionNode(segment.value, 'team'));
+      continue;
+    }
+    nodes.push($createMentionNode(segment.value, 'agent'));
+  }
+  return nodes;
+}
+
+function lexicalNodesForDisplayLine(line: string): LexicalNode[] {
+  const nodes = segmentsToLexicalNodes(parseDisplaySegments(line));
+  return nodes.length > 0 ? nodes : [$createTextNode('')];
+}
+
+export function insertDisplayContentAtCursor(editor: LexicalEditor, content: string): void {
+  const lines = content.split('\n');
+
+  editor.update(() => {
+    const selection = $getSelection();
+
+    if (!$isRangeSelection(selection)) {
+      const root = $getRoot();
+      let paragraph = root.getLastChild();
+      if (!$isParagraphNode(paragraph)) {
+        paragraph = $createParagraphNode();
+        root.append(paragraph);
+      }
+      for (const node of lexicalNodesForDisplayLine(lines[0] ?? '')) {
+        (paragraph as ParagraphNode).append(node);
+      }
+      for (let i = 1; i < lines.length; i++) {
+        const nextParagraph = $createParagraphNode();
+        for (const node of lexicalNodesForDisplayLine(lines[i])) {
+          nextParagraph.append(node);
+        }
+        root.append(nextParagraph);
+      }
+      root.selectEnd();
+      return;
+    }
+
+    const selectedText = selection.getTextContent();
+    if (selectedText) {
+      selection.removeText();
+    }
+
+    if (lines.length === 1) {
+      selection.insertNodes(lexicalNodesForDisplayLine(lines[0]));
+      return;
+    }
+
+    selection.insertNodes(lexicalNodesForDisplayLine(lines[0]));
+    for (let i = 1; i < lines.length; i++) {
+      const paragraph = $createParagraphNode();
+      for (const node of lexicalNodesForDisplayLine(lines[i])) {
+        paragraph.append(node);
+      }
+      selection.insertNodes([paragraph]);
+    }
+  });
+  editor.focus();
+}
+
 export function setEditorPlainText(editor: LexicalEditor, text: string): void {
   editor.update(() => {
     const root = $getRoot();
@@ -705,6 +894,79 @@ export function setEditorPlainText(editor: LexicalEditor, text: string): void {
   editor.focus();
 }
 
+/** Restore composer from chat display text (chips + references, same as sent message UI). */
+export function setEditorDisplayContent(editor: LexicalEditor, content: string): void {
+  editor.update(() => {
+    const root = $getRoot();
+    root.clear();
+
+    const lines = content.split('\n');
+    if (lines.length === 0) {
+      root.append($createParagraphNode());
+      return;
+    }
+
+    for (const line of lines) {
+      const paragraph = $createParagraphNode();
+      for (const node of lexicalNodesForDisplayLine(line)) {
+        paragraph.append(node);
+      }
+      if (paragraph.getChildrenSize() === 0) {
+        paragraph.append($createTextNode(''));
+      }
+      root.append(paragraph);
+    }
+    root.selectEnd();
+  });
+  editor.focus();
+}
+
+/** Intercept Lexical paste so @file/@folder/@image tokens become icon chips (like drag-drop). */
+export function DisplayContentPastePlugin({
+  canPasteDisplayContent,
+  onPasteDisplayContent,
+  onPasteImageFiles,
+  readClipboardFiles,
+}: {
+  canPasteDisplayContent: (text: string) => boolean;
+  onPasteDisplayContent: (text: string) => void;
+  onPasteImageFiles: (files: File[]) => boolean;
+  readClipboardFiles: (event: ClipboardEvent) => File[];
+}): null {
+  const [editor] = useLexicalComposerContext();
+
+  useEffect(() => {
+    return editor.registerCommand(
+      PASTE_COMMAND,
+      (event: ClipboardEvent) => {
+        const clipboardData = event.clipboardData;
+        if (!clipboardData) return false;
+
+        const files = readClipboardFiles(event);
+        if (files.length > 0) {
+          const handled = onPasteImageFiles(files);
+          if (handled) {
+            event.preventDefault();
+            return true;
+          }
+        }
+
+        const text = clipboardData.getData('text/plain');
+        if (text && canPasteDisplayContent(text)) {
+          event.preventDefault();
+          onPasteDisplayContent(text);
+          return true;
+        }
+
+        return false;
+      },
+      COMMAND_PRIORITY_HIGH,
+    );
+  }, [editor, canPasteDisplayContent, onPasteDisplayContent, onPasteImageFiles, readClipboardFiles]);
+
+  return null;
+}
+
 export function RestoreDraftPlugin({
   text,
   onRestored,
@@ -722,7 +984,7 @@ export function RestoreDraftPlugin({
     }
     if (text === lastAppliedRef.current) return;
     lastAppliedRef.current = text;
-    setEditorPlainText(editor, text);
+    setEditorDisplayContent(editor, text);
     onRestored?.();
   }, [text, editor, onRestored]);
 

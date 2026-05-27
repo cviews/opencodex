@@ -5,7 +5,6 @@ import { t } from '../constants/i18n';
 const AGENT_LABELS: Record<string, string> = {
   plan: t('mode_plan'),
   build: 'Build',
-  'build': 'Build',
   'OpenCode-Builder': 'OpenCode Builder',
   'opencode-builder': 'OpenCode Builder',
 };

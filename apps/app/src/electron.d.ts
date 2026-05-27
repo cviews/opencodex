@@ -21,6 +21,8 @@ declare global {
     configListFiles: (options: { dirPath: string; pattern?: string }) => Promise<{ success: boolean; files?: string[]; error?: string }>;
     configDeleteFile: (options: { path: string }) => Promise<{ success: boolean; error?: string }>;
     configFileExists: (options: { path: string }) => Promise<{ success: boolean; exists?: boolean; error?: string }>;
+    getPathForFile: (file: File) => string;
+    getPathKind: (filePath: string) => 'file' | 'folder' | 'image' | null;
   }
 
   interface Window {

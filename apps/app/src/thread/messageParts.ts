@@ -1,6 +1,7 @@
 import type { Message } from '@zmn-codex/types';
 import type { ToolCall } from '../types';
 import { isTeammateBootstrapContent } from './displayContent';
+import { buildUserMessageDisplayText, extractFilePathsFromParts } from './composer/promptParts';
 import { debugError } from '../utils/debugLog';
 import { looksLikeSuccessfulReadOutput, textLooksLikeToolFailure, toolFailureText } from './toolFailure';
 
@@ -112,13 +113,31 @@ export function enrichMessageFromParts(msg: Message, parts?: unknown[]): Message
   };
   if (visibleText !== undefined) {
     next.content = visibleText;
+    if (msg.role === 'user' && !msg.displayContent) {
+      const filePaths = extractFilePathsFromParts(parts);
+      const display = buildUserMessageDisplayText(visibleText, filePaths);
+      if (display) {
+        next.displayContent = display;
+        next.content = display;
+      }
+    }
     if (msg.role === 'user' && (!visibleText.trim() || isTeammateBootstrapContent(visibleText))) {
       next.content = '';
       next.displayContent = '';
     }
-  } else if (msg.role === 'user' && msg.content && isTeammateBootstrapContent(msg.content)) {
-    next.content = '';
-    next.displayContent = '';
+  } else if (msg.role === 'user') {
+    const filePaths = extractFilePathsFromParts(parts);
+    if (filePaths.length > 0 && !msg.displayContent) {
+      const display = buildUserMessageDisplayText(msg.content ?? '', filePaths);
+      if (display) {
+        next.displayContent = display;
+        next.content = display;
+      }
+    }
+    if (msg.content && isTeammateBootstrapContent(msg.content)) {
+      next.content = '';
+      next.displayContent = '';
+    }
   }
   return next;
 }

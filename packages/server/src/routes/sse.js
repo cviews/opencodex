@@ -37,7 +37,7 @@ sseRouter.get('/', async (req, res) => {
         res.write(`event: error\ndata: ${JSON.stringify({ error: message })}\n\n`);
     }
     req.on('close', () => {
-        console.log('[zmn-codex-server] SSE client disconnected');
+        console.log('[zmn-opencodex-server] SSE client disconnected');
     });
     res.end();
 });

@@ -1,4 +1,5 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { statSync } from 'fs';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
@@ -45,4 +46,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   configListFiles: (options: { dirPath: string; pattern?: string }) => ipcRenderer.invoke('config:listFiles', options),
   configDeleteFile: (options: { path: string }) => ipcRenderer.invoke('config:deleteFile', options),
   configFileExists: (options: { path: string }) => ipcRenderer.invoke('config:fileExists', options),
+
+  /** Resolve absolute path for a dropped/selected File (Electron 20+). */
+  getPathForFile: (file: File) => webUtils.getPathForFile(file),
+
+  /** Classify a local path as file, folder, or image. */
+  getPathKind: (filePath: string): 'file' | 'folder' | 'image' | null => {
+    try {
+      const stat = statSync(filePath);
+      if (stat.isDirectory()) return 'folder';
+      if (/\.(png|jpe?g|gif|webp|bmp|svg|ico|heic|heif|tiff?)$/i.test(filePath)) return 'image';
+      return 'file';
+    } catch {
+      return null;
+    }
+  },
 });

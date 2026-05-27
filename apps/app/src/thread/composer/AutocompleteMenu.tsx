@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { Check, ListOrdered, ClipboardList } from 'lucide-react';
 import type { AutoCompleteState } from './plugins';
-import { insertMention, insertSlashCommand, insertModelChip, insertModelMention, clearSlashTrigger } from './plugins';
+import { insertMention, insertSlashCommand, insertModelChip, insertModelMention, clearSlashTrigger, clearMentionTrigger } from './plugins';
 import { MODEL_PROVIDERS, getAllModels, type ModelItem, type ProviderGroup } from './models';
 import { useAgentStore } from '../../stores/agent';
 import { useProjectStore } from '../../stores/project';
@@ -130,6 +130,7 @@ export function AutocompleteMenu({
   fixedPosition,
   onTogglePlanMode,
   onCompress,
+  onFileAttach,
 }: {
   state: AutoCompleteState;
   onClose: () => void;
@@ -138,6 +139,7 @@ export function AutocompleteMenu({
   fixedPosition?: { top: number; left: number; right: number };
   onTogglePlanMode?: () => void;
   onCompress?: () => void;
+  onFileAttach?: (path: string, name: string) => void;
 }): React.JSX.Element | null {
   const [editor] = useLexicalComposerContext();
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -213,6 +215,9 @@ export function AutocompleteMenu({
           insertModelMention(editor, item.modelId, item.name);
         } else if ('kind' in item && item.kind === 'team' && 'key' in item) {
           insertMention(editor, item.key, 'team');
+        } else if ('kind' in item && item.kind === 'file' && 'description' in item && item.description && onFileAttach) {
+          clearMentionTrigger(editor);
+          onFileAttach(item.description, item.name);
         } else if ('kind' in item) {
           insertMention(editor, item.name, item.kind);
         }
@@ -234,7 +239,7 @@ export function AutocompleteMenu({
       }
       onClose();
     },
-    [editor, state.type, onClose, onTogglePlanMode, onCompress],
+    [editor, state.type, onClose, onTogglePlanMode, onCompress, onFileAttach],
   );
 
   useEffect(() => {

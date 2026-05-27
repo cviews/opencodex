@@ -219,7 +219,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         if (!sessionID) return;
         const known =
           get().sessions.some((s) => s.id === sessionID) ||
-          get().subAgents.some((a) => a.id === sessionID || a.sessionID === sessionID);
+          get().subAgents.some((a) => a.id === sessionID || a.sessionId === sessionID);
         if (known) get().setSessionRunStatus(sessionID, 'error');
       }),
     );

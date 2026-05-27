@@ -115,6 +115,11 @@ export function SDKProvider({ children, initialUrl }: { children: ReactNode; ini
       setReconnecting(true);
       setError(null);
       const result = await electronAPI.engineRestartWithDir(directory);
+      if (!result) {
+        setReconnecting(false);
+        setConnected(false);
+        return null;
+      }
       if (result.state === 'running' && result.url) {
         invalidateOpenCodeServerUrlCache();
         const currentUrl = serverUrlRef.current;

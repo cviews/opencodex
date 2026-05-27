@@ -89,9 +89,9 @@ export function parseCompactionsFromSessionMessages(
         const summaryText = extractTextFromRawItem(item);
         if (summaryText) {
           const parentId = info.parentID;
-          const match = results.findLast(
-            (c) => c.turnUserMessageId === parentId || c.id === parentId,
-          );
+          const match = [...results]
+            .reverse()
+            .find((c) => c.turnUserMessageId === parentId || c.id === parentId);
           if (match) {
             match.summary = summaryText;
             match.status = 'done';

@@ -38,7 +38,13 @@ import {
   clearEditor,
   isEditorEmpty,
   extractModelIdFromEditor,
+  insertFileReferenceAtCursor,
+  extractFilePathsFromEditor,
+  insertDisplayContentAtCursor,
+  DisplayContentPastePlugin,
+  EditorCapturePlugin,
 } from './composer/plugins';
+import { containsPastableDisplayContent } from './displayTokens';
 import { AutocompleteMenu } from './composer/AutocompleteMenu';
 import { ProviderModelControls } from './composer/ProviderModelControls';
 import { resolveOutgoingModelRef, ensureModelCapabilitiesReady } from './composer/models';
@@ -60,6 +66,14 @@ import { useSDK } from '../sdk/provider';
 import type { ProjectInfo } from '../types';
 import { t } from '../constants/i18n';
 import { extractDisplayContentFromEditor } from './composer/displayContent';
+import { inferReferenceKindFromPath, type ReferenceKind } from './composer/referenceChip';
+import { ReferenceChip } from './ReferenceChip';
+import {
+  buildOutgoingDisplayContent,
+  parseDropFilePath,
+  readClipboardFiles,
+  resolveLocalFilePath,
+} from './composer/promptParts';
 
 interface Attachment {
   id: string;
@@ -231,6 +245,10 @@ export function Composer({
   }, [acState.type, acState.query]);
 
   const editorRef = useRef<LexicalEditor | null>(null);
+  const onEditorReady = useCallback((editor: LexicalEditor) => {
+    editorRef.current = editor;
+  }, []);
+  const composerDropRef = useRef<HTMLDivElement>(null);
   const plusMenuRef = useRef<HTMLDivElement>(null);
   const permissionMenuRef = useRef<HTMLDivElement>(null);
   const projectMenuRef = useRef<HTMLDivElement>(null);
@@ -252,6 +270,18 @@ export function Composer({
   const projectDropUp = useDropDirection(projectMenuRef, showProjectDropdown);
 
   const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+
+  const insertPathInEditor = useCallback((path: string, refKind?: ReferenceKind) => {
+    if (!editorRef.current) return;
+    const kind = refKind ?? inferReferenceKindFromPath(path);
+    insertFileReferenceAtCursor(editorRef.current, path, kind);
+    editorRef.current.focus();
+    setEditorEmpty(false);
+  }, []);
+
+  const handleFileAttach = useCallback((path: string) => {
+    insertPathInEditor(path);
+  }, [insertPathInEditor]);
 
   const processImageFiles = useCallback((files: FileList | File[]) => {
     const imageFiles = Array.from(files).filter((f) => f.type.startsWith('image/'));
@@ -276,18 +306,76 @@ export function Composer({
     return true;
   }, [MAX_FILE_SIZE]);
 
-  const handlePaste = useCallback((event: React.ClipboardEvent) => {
-    const hasImage = processImageFiles(event.clipboardData.files);
-    if (hasImage) {
-      event.preventDefault();
+  const processSelectedFiles = useCallback((files: FileList | File[]) => {
+    const imageFiles: File[] = [];
+    for (const file of Array.from(files)) {
+      const filePath = resolveLocalFilePath(file);
+      if (file.type.startsWith('image/') && filePath) {
+        insertPathInEditor(filePath, 'image');
+        continue;
+      }
+      if (file.type.startsWith('image/')) {
+        imageFiles.push(file);
+        continue;
+      }
+      if (filePath) {
+        insertPathInEditor(filePath);
+      }
     }
-    // If no image files, let Lexical handle the paste naturally
+    if (imageFiles.length > 0) {
+      processImageFiles(imageFiles);
+    }
+  }, [insertPathInEditor, processImageFiles]);
+
+  const ingestDropEvent = useCallback((event: DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const droppedPath = parseDropFilePath(event);
+    if (droppedPath) {
+      insertPathInEditor(droppedPath);
+      return;
+    }
+
+    const files = event.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+    processSelectedFiles(files);
+  }, [insertPathInEditor, processSelectedFiles]);
+
+  useEffect(() => {
+    const root = composerDropRef.current;
+    if (!root) return;
+
+    const onDragOver = (event: DragEvent) => {
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'copy';
+      }
+    };
+    const onDrop = (event: DragEvent) => ingestDropEvent(event);
+
+    root.addEventListener('dragover', onDragOver, true);
+    root.addEventListener('drop', onDrop, true);
+
+    return () => {
+      root.removeEventListener('dragover', onDragOver, true);
+      root.removeEventListener('drop', onDrop, true);
+    };
+  }, [ingestDropEvent]);
+
+  const handlePasteDisplayContent = useCallback((text: string) => {
+    if (!editorRef.current) return;
+    insertDisplayContentAtCursor(editorRef.current, text);
+    setEditorEmpty(false);
+  }, []);
+
+  const handlePasteImageFiles = useCallback((files: File[]) => {
+    return processImageFiles(files);
   }, [processImageFiles]);
 
   const handleDrop = useCallback((event: React.DragEvent) => {
-    event.preventDefault();
-    processImageFiles(event.dataTransfer.files);
-  }, [processImageFiles]);
+    ingestDropEvent(event.nativeEvent);
+  }, [ingestDropEvent]);
 
   const handleDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault();
@@ -301,7 +389,9 @@ export function Composer({
     let displayContent = '';
     let agentName: string | undefined;
     let teamKey: string | undefined;
+    let capturedFilePaths: string[] = [];
     displayContent = extractDisplayContentFromEditor(editorRef.current);
+    capturedFilePaths = extractFilePathsFromEditor(editorRef.current);
     editorRef.current.getEditorState().read(() => {
       const root = $getRoot();
       text = root.getTextContent().replace(/\n+$/, '');
@@ -327,8 +417,15 @@ export function Composer({
     }
 
     const capturedText = text;
-    const capturedDisplay = displayContent || capturedText;
     const capturedAttachments = [...attachments];
+    const modelRef =
+      resolveOutgoingModelRef(
+        editorRef.current ? extractModelIdFromEditor(editorRef.current) : null,
+      ) ?? undefined;
+    const capturedDisplay = buildOutgoingDisplayContent(
+      displayContent || capturedText,
+      capturedAttachments,
+    );
     clearEditor(editorRef.current);
     setEditorEmpty(true);
     if (capturedAttachments.length > 0) {
@@ -341,10 +438,6 @@ export function Composer({
     try {
       setSendError(null);
       const capabilitiesReady = ensureModelCapabilitiesReady();
-      const modelRef =
-        resolveOutgoingModelRef(
-          editorRef.current ? extractModelIdFromEditor(editorRef.current) : null,
-        ) ?? undefined;
 
       if (!sessionId) {
         pendingSessionId = createPendingSessionId();
@@ -366,7 +459,7 @@ export function Composer({
         }
 
         unstable_batchedUpdates(() => {
-          useMessageStore.getState().migrateOutgoingSession(pendingSessionId, newSession.id);
+          useMessageStore.getState().migrateOutgoingSession(pendingSessionId!, newSession.id);
           useSessionStore.getState().addSession(newSession);
           useSessionStore.getState().setActiveSession(newSession.id);
         });
@@ -381,6 +474,10 @@ export function Composer({
       }
 
       await capabilitiesReady;
+      const resolvedModelRef =
+        modelRef ??
+        resolveOutgoingModelRef(null) ??
+        undefined;
 
       const agent = planMode ? 'plan' : (agentName || 'OpenCode-Builder');
       const teamState = useTeamStore.getState();
@@ -438,6 +535,11 @@ export function Composer({
       await useMessageStore.getState().dispatchOutgoingMessage(sessionId, outboundText, {
         ...(agent ? { agent } : {}),
         displayContent: capturedDisplay,
+        modelRef: resolvedModelRef,
+        promptAttachments: {
+          images: capturedAttachments.map((item) => item.file),
+          filePaths: capturedFilePaths,
+        },
       });
 
       pipelineMark(sessionId, 'composer.prompt.dispatch.done', {});
@@ -545,27 +647,25 @@ export function Composer({
 
   return (
     <div className="px-4 py-3">
-      <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) processImageFiles(e.target.files); e.target.value = ''; }} />
+      <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) processSelectedFiles(e.target.files); e.target.value = ''; }} />
       <div className="max-w-3xl mx-auto">
         <LexicalComposer initialConfig={initialConfig}>
-          <div className="border border-[#E5E5E5] bg-white rounded-t-xl p-4 shadow-sm" onPaste={handlePaste} onDrop={handleDrop} onDragOver={handleDragOver}>
+          <div ref={composerDropRef} className="border border-[#E5E5E5] bg-white rounded-t-xl p-4 shadow-sm" onDrop={handleDrop} onDragOver={handleDragOver}>
             {attachments.length > 0 && (
-              <div className="flex gap-2 mb-3">
+              <div className="flex flex-wrap gap-2 mb-3">
                 {attachments.map((att) => (
-                  <div key={att.id} className="relative group rounded-lg overflow-hidden border border-[#E5E5E5] shadow-sm">
-                    <img src={att.previewUrl} alt={att.name} className="w-20 h-20 object-cover" />
+                  <div key={att.id} className="relative group inline-flex items-center">
+                    <ReferenceChip kind="image" label={att.name} />
                     <button
                       onClick={() => {
                         URL.revokeObjectURL(att.previewUrl);
                         setAttachments((prev) => prev.filter((a) => a.id !== att.id));
                       }}
-                      className="absolute top-1 right-1 w-5 h-5 rounded-full bg-[#1F1F1F]/60 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                      className="ml-1 w-5 h-5 rounded-full bg-[#1F1F1F]/60 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                      aria-label={`Remove ${att.name}`}
                     >
                       <X size={12} />
                     </button>
-                    <div className="absolute bottom-0 left-0 right-0 bg-[#1F1F1F]/60 text-white text-[10px] px-1 py-0.5 truncate opacity-0 group-hover:opacity-100 transition-opacity">
-                      {att.name}
-                    </div>
                   </div>
                 ))}
               </div>
@@ -589,10 +689,17 @@ export function Composer({
                 ErrorBoundary={({ children }) => <>{children}</>}
               />
               <HistoryPlugin />
+              <EditorCapturePlugin onEditorReady={onEditorReady} />
               <SubmitPlugin onSubmit={handleSend} />
               <ChipNavigationPlugin />
               <AutoCompletePlugin onStateChange={setAcState} />
               <OnChangePlugin onChange={onChange} />
+              <DisplayContentPastePlugin
+                canPasteDisplayContent={containsPastableDisplayContent}
+                onPasteDisplayContent={handlePasteDisplayContent}
+                onPasteImageFiles={handlePasteImageFiles}
+                readClipboardFiles={readClipboardFiles}
+              />
               <RestoreDraftPlugin text={restoreText} onRestored={onRestoreHandled} />
               <SkillInsertPlugin skillName={skillName ?? null} onInserted={() => {}} />
             </div>
@@ -607,6 +714,7 @@ export function Composer({
                   opencodeSlash.setPlanMode(next);
                 }}
                 onCompress={() => { void handleCompressContext(); }}
+                onFileAttach={handleFileAttach}
               />
             )}
 
@@ -696,9 +804,9 @@ export function Composer({
                   ) : (
                     <button
                       onClick={handleSend}
-                      disabled={editorEmpty}
+                      disabled={editorEmpty && attachments.length === 0}
                       title="发送"
-                      className={`p-2 rounded-full transition-colors ${!editorEmpty ? 'bg-[#1F1F1F] text-white hover:bg-[#333333]' : 'text-[#9A9A9A] bg-[#F0F0F0]'}`}
+                      className={`p-2 rounded-full transition-colors ${(!editorEmpty || attachments.length > 0) ? 'bg-[#1F1F1F] text-white hover:bg-[#333333]' : 'text-[#9A9A9A] bg-[#F0F0F0]'}`}
                     >
                       <Send size={16} />
                     </button>

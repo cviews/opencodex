@@ -1,11 +1,12 @@
-import { useEffect, useRef, useCallback } from 'react';
-import { Plus, X } from 'lucide-react';
+import { useEffect, useRef, useCallback, useState } from 'react';
+import { Loader2, Plus, X } from 'lucide-react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 import type { OpencodeClient } from '@opencode-ai/sdk/v2/client';
 import { useProjectStore } from '../stores/project';
+import { useSettingsStore } from '../stores/settings';
 import { useSDK } from '../sdk/provider';
 import {
   TERMINAL_MAX_HEIGHT,
@@ -15,8 +16,20 @@ import {
 } from '../stores/terminal';
 import { getXtermTheme, useResolvedTheme } from '../hooks/useResolvedTheme';
 import { useTerminalI18n } from '../hooks/useTerminalI18n';
+import { stringResource } from '../i18n';
 import { terminalWebSocketURL } from '../services/terminalWebSocketUrl';
 import { terminalWriter } from '../services/terminalWriter';
+import {
+  connectTerminalWebSocket,
+  TERMINAL_CONNECT_TIMEOUT_MS,
+  TERMINAL_HEALTH_TIMEOUT_MS,
+  TERMINAL_SOCKET_CLOSING,
+  TERMINAL_SOCKET_CLOSED,
+  TERMINAL_SOCKET_OPEN,
+  TERMINAL_TOKEN_TIMEOUT_MS,
+  withTimeout,
+  type TerminalSocket,
+} from '../services/terminalConnect';
 import {
   terminalClearError,
   terminalLogError,
@@ -32,6 +45,17 @@ function focusTerminal(term: Terminal, container: HTMLElement) {
   term.focus();
   term.textarea?.focus();
   window.setTimeout(() => term.textarea?.focus(), 0);
+}
+
+function TerminalLoadingOverlay({ message }: { message: string }) {
+  return (
+    <div className="absolute inset-0 z-30 flex items-center justify-center bg-white/80 dark:bg-[#2D2D2D]/80 backdrop-blur-[1px]">
+      <div className="flex items-center gap-2 text-xs text-[#6B6B6B] dark:text-[#9A9A9A]">
+        <Loader2 size={14} className="animate-spin text-[#2B8FFF]" />
+        <span>{message}</span>
+      </div>
+    </div>
+  );
 }
 
 function TerminalTabView({
@@ -51,6 +75,7 @@ function TerminalTabView({
   const projectPath = useProjectStore((s) => s.currentProject.path);
   const panelHeight = useTerminalStore((s) => s.height);
   const { isDark } = useResolvedTheme();
+  const [loadingMessage, setLoadingMessage] = useState<string | null>(null);
 
   const syncSizeRef = useRef<() => void>(() => {});
 
@@ -82,11 +107,15 @@ function TerminalTabView({
     if (!container) return;
 
     let disposed = false;
-    let ws: WebSocket | undefined;
+    let ws: TerminalSocket | undefined;
     let ptyId: string | undefined;
     let sizeTimer: ReturnType<typeof setTimeout> | undefined;
     let pendingSize: { cols: number; rows: number } | undefined;
     let output: ReturnType<typeof terminalWriter> | undefined;
+    const settingsLanguage = useSettingsStore.getState().language;
+    const i18nLang = settingsLanguage === 'zh-CN' ? 'zh' : 'en';
+    const msgConnecting = stringResource('terminal.connecting', i18nLang);
+    const msgStartingShell = stringResource('terminal.startingShell', i18nLang);
 
     const term = new Terminal({
       cursorBlink: true,
@@ -106,7 +135,13 @@ function TerminalTabView({
     term.loadAddon(unicode11Addon);
     term.open(container);
     term.unicode.activeVersion = '11';
-    fitAddon.fit();
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (disposed) return;
+        fitAddon.fit();
+      });
+    });
 
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
@@ -143,13 +178,21 @@ function TerminalTabView({
     const connectWebSocket = async (id: string) => {
       terminalLogInfo('ws.connecting', { ptyId: id, serverUrl, projectPath, tabId: tab.id });
 
-      const tokenResult = await client.pty.connectToken(
-        { ptyID: id, directory: projectPath },
-        {
-          throwOnError: false,
-          headers: { 'x-opencode-ticket': '1' },
-        },
+      setLoadingMessage(msgStartingShell);
+
+      const tokenResult = await withTimeout(
+        client.pty.connectToken(
+          { ptyID: id, directory: projectPath },
+          {
+            throwOnError: false,
+            headers: { 'x-opencode-ticket': '1' },
+          },
+        ),
+        TERMINAL_TOKEN_TIMEOUT_MS,
+        '获取终端连接凭证',
       );
+
+      if (disposed) return undefined;
 
       terminalLogInfo('ws.connectToken', {
         status: tokenResult.response.status,
@@ -179,27 +222,33 @@ function TerminalTabView({
         ticket,
       });
 
-      terminalLogInfo('ws.url', { wsUrl: wsUrl.replace(/ticket=[^&]+/, 'ticket=***'), tabId: tab.id });
+      terminalLogInfo('ws.url', {
+        wsUrl: wsUrl.replace(/ticket=[^&]+/, 'ticket=***'),
+        tabId: tab.id,
+      });
 
-      const socket = new WebSocket(wsUrl);
-      socket.binaryType = 'arraybuffer';
+      const socket = await connectTerminalWebSocket(wsUrl, TERMINAL_CONNECT_TIMEOUT_MS);
+      if (disposed) {
+        socket.close(1000);
+        return undefined;
+      }
+
       ws = socket;
 
       const decoder = new TextDecoder();
 
-      socket.addEventListener('open', () => {
-        if (disposed) return;
-        terminalLogInfo('ws.open', { ptyId: id, tabId: tab.id });
-        terminalClearError();
-        syncSizeRef.current();
-        scheduleServerResize(term.cols, term.rows);
-        focusTerminal(term, container);
-      });
+      terminalLogInfo('ws.open', { ptyId: id, tabId: tab.id });
+      terminalClearError();
+      setLoadingMessage(null);
+      syncSizeRef.current();
+      scheduleServerResize(term.cols, term.rows);
+      focusTerminal(term, container);
 
       socket.addEventListener('message', (event) => {
         if (disposed) return;
-        if (event.data instanceof ArrayBuffer) {
-          const bytes = new Uint8Array(event.data);
+        const messageEvent = event as MessageEvent;
+        if (messageEvent.data instanceof ArrayBuffer) {
+          const bytes = new Uint8Array(messageEvent.data);
           if (bytes[0] !== 0) return;
           try {
             const json = decoder.decode(bytes.subarray(1));
@@ -213,26 +262,36 @@ function TerminalTabView({
           }
           return;
         }
-        const data = typeof event.data === 'string' ? event.data : '';
+        if (typeof Blob !== 'undefined' && messageEvent.data instanceof Blob) {
+          return;
+        }
+        const data = typeof messageEvent.data === 'string' ? messageEvent.data : '';
         if (!data) return;
         output?.push(data);
       });
 
       socket.addEventListener('error', (event) => {
         if (disposed) return;
-        terminalLogError('ws.error', 'WebSocket error', { ptyId: id, tabId: tab.id, event: String(event) });
+        terminalLogError('ws.error', 'WebSocket error', {
+          ptyId: id,
+          tabId: tab.id,
+          event: String(event),
+        });
+        setLoadingMessage(null);
         term.writeln('\r\n\x1b[31mTerminal connection error\x1b[0m');
       });
 
       socket.addEventListener('close', (event) => {
         if (disposed) return;
-        terminalLogWarn('ws.close', `code=${event.code} reason=${event.reason || '(none)'}`, {
+        const closeEvent = event as CloseEvent;
+        terminalLogWarn('ws.close', `code=${closeEvent.code} reason=${closeEvent.reason || '(none)'}`, {
           ptyId: id,
           tabId: tab.id,
-          wasClean: event.wasClean,
+          wasClean: closeEvent.wasClean,
         });
-        if (event.code !== 1000) {
-          term.writeln(`\r\n\x1b[31mTerminal disconnected (${event.code})\x1b[0m`);
+        setLoadingMessage(null);
+        if (closeEvent.code !== 1000) {
+          term.writeln(`\r\n\x1b[31mTerminal disconnected (${closeEvent.code})\x1b[0m`);
         }
       });
 
@@ -244,12 +303,25 @@ function TerminalTabView({
     const cleanupFns: Array<() => void> = [];
 
     const run = async () => {
+      setLoadingMessage(msgConnecting);
+
       terminalLogInfo('pty.create.start', { projectPath, tabId: tab.id, serverUrl });
 
-      const createResult = await client.pty.create({
-        directory: projectPath,
-        cwd: projectPath,
-      });
+      await withTimeout(
+        client.global.health({ throwOnError: true }),
+        TERMINAL_HEALTH_TIMEOUT_MS,
+        '服务健康检查',
+      );
+      if (disposed) return;
+
+      const createResult = await withTimeout(
+        client.pty.create({
+          directory: projectPath,
+          cwd: projectPath,
+        }),
+        TERMINAL_CONNECT_TIMEOUT_MS,
+        '创建终端会话',
+      );
 
       if (disposed) return;
 
@@ -266,6 +338,7 @@ function TerminalTabView({
           status: createResult.response?.status,
           projectPath,
         });
+        setLoadingMessage(null);
         term.writeln('\r\n\x1b[31mFailed to create terminal session\x1b[0m');
         return;
       }
@@ -280,7 +353,7 @@ function TerminalTabView({
 
       let sendSkipLogged = false;
       const onData = term.onData((data) => {
-        if (ws?.readyState === WebSocket.OPEN) {
+        if (ws?.readyState === TERMINAL_SOCKET_OPEN) {
           ws.send(data);
         } else if (!sendSkipLogged) {
           sendSkipLogged = true;
@@ -319,15 +392,17 @@ function TerminalTabView({
     void run().catch((err) => {
       if (!disposed) {
         terminalLogError('start.failed', err, { tabId: tab.id, projectPath, serverUrl });
+        setLoadingMessage(null);
         term.writeln('\r\n\x1b[31mFailed to start terminal\x1b[0m');
       }
     });
 
     return () => {
       disposed = true;
+      setLoadingMessage(null);
       if (sizeTimer) clearTimeout(sizeTimer);
       for (const fn of cleanupFns) fn();
-      if (ws && ws.readyState !== WebSocket.CLOSED && ws.readyState !== WebSocket.CLOSING) {
+      if (ws && ws.readyState !== TERMINAL_SOCKET_CLOSED && ws.readyState !== TERMINAL_SOCKET_CLOSING) {
         ws.close(1000);
       }
       term.dispose();
@@ -344,22 +419,26 @@ function TerminalTabView({
   if (!isActive) return null;
 
   return (
-    <div
-      ref={containerRef}
-      onPointerDown={() => {
-        const term = xtermRef.current;
-        const container = containerRef.current;
-        if (term && container) focusTerminal(term, container);
-      }}
-      className="absolute inset-0 px-2 py-1 z-10 cursor-text select-text"
-    />
+    <>
+      {loadingMessage ? <TerminalLoadingOverlay message={loadingMessage} /> : null}
+      <div
+        ref={containerRef}
+        onPointerDown={() => {
+          const term = xtermRef.current;
+          const container = containerRef.current;
+          if (term && container) focusTerminal(term, container);
+        }}
+        className="absolute inset-0 px-2 py-1 z-10 cursor-text select-text"
+      />
+    </>
   );
 }
 
 export function EmbeddedTerminal() {
   const { isDark } = useResolvedTheme();
   const { t, tabLabel } = useTerminalI18n();
-  const { client, serverUrl, connected } = useSDK();
+  const { client, serverUrl, connected, reconnecting } = useSDK();
+  const projectPath = useProjectStore((s) => s.currentProject.path);
   const { height, tabs, activeTabId, addTab, closeTab, setActiveTab, setHeight, lastError, setLastError } =
     useTerminalStore();
 
@@ -384,6 +463,14 @@ export function EmbeddedTerminal() {
 
   const shellTheme = getXtermTheme(isDark);
   const canConnect = connected && client && serverUrl;
+  const hasProjectPath = Boolean(projectPath?.trim());
+
+  let panelMessage: string | null = null;
+  if (!canConnect) {
+    panelMessage = reconnecting ? t('terminal.connecting') : t('terminal.waitingService');
+  } else if (!hasProjectPath) {
+    panelMessage = t('terminal.selectProject');
+  }
 
   return (
     <div
@@ -448,11 +535,11 @@ export function EmbeddedTerminal() {
             </button>
           </div>
         ) : null}
-        {!canConnect ? (
+        {panelMessage ? (
           <div className="flex h-full items-center justify-center text-xs text-[#9A9A9A]">
-            等待 opencode 服务连接...
+            {panelMessage}
           </div>
-        ) : (
+        ) : client && serverUrl ? (
           tabs.map((tab) => (
             <TerminalTabView
               key={`${tab.id}-${tab.sessionKey}`}
@@ -462,7 +549,7 @@ export function EmbeddedTerminal() {
               serverUrl={serverUrl}
             />
           ))
-        )}
+        ) : null}
       </div>
     </div>
   );

@@ -61,4 +61,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return null;
     }
   },
+
+  terminalConnect: (wsUrl: string) => ipcRenderer.invoke('terminal:connect', { wsUrl }),
+  terminalSend: (channelId: string, data: string) => ipcRenderer.invoke('terminal:send', { channelId, data }),
+  terminalDisconnect: (channelId: string) => ipcRenderer.invoke('terminal:disconnect', { channelId }),
+  onTerminalWsEvent: (callback: (event: {
+    type: 'message' | 'close' | 'error';
+    channelId: string;
+    binary?: boolean;
+    data?: string | ArrayBuffer;
+    code?: number;
+    reason?: string;
+  }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: {
+      type: 'message' | 'close' | 'error';
+      channelId: string;
+      binary?: boolean;
+      data?: string | ArrayBuffer;
+      code?: number;
+      reason?: string;
+    }) => callback(payload);
+    ipcRenderer.on('terminal:ws-event', listener);
+    return () => ipcRenderer.removeListener('terminal:ws-event', listener);
+  },
 });

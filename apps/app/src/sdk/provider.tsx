@@ -24,6 +24,11 @@ function getElectronAPI(): ElectronAPIShape | undefined {
   return (window as unknown as Record<string, unknown>)['electronAPI'] as ElectronAPIShape | undefined;
 }
 
+export interface RestartWithDirResult {
+  url: string | null;
+  error?: string;
+}
+
 interface SDKContextValue {
   client: ReturnType<typeof getClient>;
   serverUrl: string | null;
@@ -32,7 +37,7 @@ interface SDKContextValue {
   error: string | null;
   reconnect: () => void;
   updateServerUrl: (url: string) => void;
-  restartWithDir: (directory: string) => Promise<string | null>;
+  restartWithDir: (directory: string) => Promise<RestartWithDirResult>;
 }
 
 const SDKContext = createContext<SDKContextValue>({
@@ -43,7 +48,7 @@ const SDKContext = createContext<SDKContextValue>({
   error: null,
   reconnect: () => {},
   updateServerUrl: () => {},
-  restartWithDir: async () => null,
+  restartWithDir: async () => ({ url: null }),
 });
 
 export function useSDK(): SDKContextValue {
@@ -103,12 +108,12 @@ export function SDKProvider({ children, initialUrl }: { children: ReactNode; ini
     setServerUrl(url);
   }, []);
 
-  const restartWithDir = useCallback(async (directory: string): Promise<string | null> => {
+  const restartWithDir = useCallback(async (directory: string): Promise<RestartWithDirResult> => {
     const electronAPI = getElectronAPI();
 
     if (!electronAPI?.engineRestartWithDir) {
       debugWarn('sdk.engineRestartWithDir-unavailable', 'engineRestartWithDir not available');
-      return null;
+      return { url: null, error: '桌面端接口不可用' };
     }
 
     try {
@@ -118,7 +123,7 @@ export function SDKProvider({ children, initialUrl }: { children: ReactNode; ini
       if (!result) {
         setReconnecting(false);
         setConnected(false);
-        return null;
+        return { url: null, error: '未收到引擎响应' };
       }
       if (result.state === 'running' && result.url) {
         invalidateOpenCodeServerUrlCache();
@@ -135,20 +140,21 @@ export function SDKProvider({ children, initialUrl }: { children: ReactNode; ini
           setServerUrl(result.url);
         }
         setReconnecting(false);
-        return result.url;
+        return { url: result.url };
       }
       setReconnecting(false);
       setConnected(false);
-      if (result.state === 'error') {
-        setError(result.error || 'Engine restart failed');
-      }
-      return null;
+      const message = result.state === 'error'
+        ? (result.error || 'Engine restart failed')
+        : 'Engine restart failed';
+      setError(message);
+      return { url: null, error: message };
     } catch (err: unknown) {
       setReconnecting(false);
       setConnected(false);
       const message = err instanceof Error ? err.message : String(err);
       setError(message);
-      return null;
+      return { url: null, error: message };
     }
   }, [connect]);
 

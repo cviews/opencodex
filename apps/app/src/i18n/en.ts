@@ -128,6 +128,10 @@ export const en: Record<string, string> = {
   'terminal.newTerminal': 'New Terminal',
   'terminal.newTab': 'New terminal',
   'terminal.closeTab': 'Close',
+  'terminal.waitingService': 'Waiting for opencode service...',
+  'terminal.selectProject': 'Select a project directory first',
+  'terminal.connecting': 'Connecting terminal...',
+  'terminal.startingShell': 'Starting shell...',
 
   // Settings
   'settings.title': 'Settings',

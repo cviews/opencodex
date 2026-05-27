@@ -128,6 +128,10 @@ export const zh: Record<string, string> = {
   'terminal.newTerminal': '\u65b0\u5efa\u7ec8\u7aef',
   'terminal.newTab': '\u65b0\u5efa\u7ec8\u7aef',
   'terminal.closeTab': '\u5173\u95ed',
+  'terminal.waitingService': '\u7b49\u5f85 opencode \u670d\u52a1\u8fde\u63a5...',
+  'terminal.selectProject': '\u8bf7\u5148\u9009\u62e9\u9879\u76ee\u76ee\u5f55',
+  'terminal.connecting': '\u6b63\u5728\u8fde\u63a5\u7ec8\u7aef...',
+  'terminal.startingShell': '\u6b63\u5728\u542f\u52a8 shell...',
 
   // Settings
   'settings.title': '\u8bbe\u7f6e',

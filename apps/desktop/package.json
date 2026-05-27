@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc && NODE_ENV=development bash ../../scripts/dev-desktop.sh",
-    "package": "tsc && electron-builder",
+    "package": "tsc && rm -rf renderer && cp -R ../app/dist renderer && electron-builder",
     "lint": "echo 'lint placeholder'",
     "type-check": "tsc --noEmit"
   },

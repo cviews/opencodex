@@ -224,11 +224,11 @@ export function ProjectSection() {
     useSessionStore.getState().setSessions([]);
     navigate('/');
 
-    const url = await restartWithDir(project.path);
+    const { url, error } = await restartWithDir(project.path);
 
     if (!url) {
       setProject(previousProject);
-      setSwitchError('启动 opencode 服务失败，请重试');
+      setSwitchError(error || '启动 opencode 服务失败，请重试');
       setSwitchingProjectId(null);
       return;
     }

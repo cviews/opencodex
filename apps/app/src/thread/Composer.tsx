@@ -55,6 +55,7 @@ import { useSessionContext } from '../hooks/useSessionContext';
 import { opencodeSlash, opencodePermission, opencodeEngine, opencodeSession, buildTeamLaunchPrompt, opencodeProvider, opencodeTeam } from '../services/opencodeAdapter';
 import { getCachedTeamBySession } from '../services/teamSessionCache';
 import { debugError, debugLog, debugWarn } from '../utils/debugLog';
+import { deferAfterNativeDialog } from '../utils/deferAfterNativeDialog';
 import { pipelineMark, pipelineReset } from '../utils/pipelineTiming';
 import { usePermissionStore } from '../stores/permission';
 import { useProjectStore } from '../stores/project';
@@ -161,6 +162,7 @@ export function Composer({
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const sessionContext = useSessionContext();
   const [restarting, setRestarting] = useState(false);
+  const [pickingFolder, setPickingFolder] = useState(false);
   const [restartError, setRestartError] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sendNotice, setSendNotice] = useState<string | null>(null);
@@ -587,23 +589,30 @@ export function Composer({
   }, [attachments, planMode]);
 
   const handleAddProject = useCallback(async () => {
+    if (pickingFolder || restarting) return;
+
     setShowProjectDropdown(false);
     const api = (window as unknown as Record<string, unknown>)['electronAPI'] as
       | { openFolderDialog: () => Promise<string | null> }
       | undefined;
-    const folder = await api?.openFolderDialog();
-    if (folder) {
+
+    setPickingFolder(true);
+    try {
+      const folder = await api?.openFolderDialog();
+      if (!folder) return;
+
       const pathParts = folder.split('/');
       const name = pathParts[pathParts.length - 1] || folder;
       const newProject: ProjectInfo = { id: Date.now().toString(), name, path: folder };
 
+      await deferAfterNativeDialog();
       setRestarting(true);
       setRestartError(null);
 
-      const url = await restartWithDir(newProject.path);
+      const { url, error } = await restartWithDir(newProject.path);
       if (!url) {
         setRestarting(false);
-        setRestartError('启动 opencode 服务失败，请重试');
+        setRestartError(error || '启动 opencode 服务失败，请重试');
         return;
       }
 
@@ -612,18 +621,20 @@ export function Composer({
       useSessionStore.getState().setActiveSession(null);
       opencodeSession.createSession(newProject.path);
       setRestarting(false);
+    } finally {
+      setPickingFolder(false);
     }
-  }, [restartWithDir, addProject, setProject]);
+  }, [restartWithDir, addProject, setProject, pickingFolder, restarting]);
 
   const handleProjectSwitch = useCallback(async (project: ProjectInfo) => {
     setShowProjectDropdown(false);
     setRestarting(true);
     setRestartError(null);
 
-    const url = await restartWithDir(project.path);
+    const { url, error } = await restartWithDir(project.path);
     if (!url) {
       setRestarting(false);
-      setRestartError('启动 opencode 服务失败，请重试');
+      setRestartError(error || '启动 opencode 服务失败，请重试');
       return;
     }
 
@@ -845,7 +856,7 @@ export function Composer({
                     {p.id === currentProject.id && <Check size={14} className="text-[#2B8FFF]" />}
                   </button>
                 ))}
-                <button onClick={handleAddProject} disabled={restarting} className="flex items-center gap-2 w-full px-3 py-2 text-sm text-left text-[#6B6B6B] hover:bg-[#F5F5F5] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"><Plus size={14} /><span>添加新项目</span></button>
+                <button onClick={handleAddProject} disabled={restarting || pickingFolder} className="flex items-center gap-2 w-full px-3 py-2 text-sm text-left text-[#6B6B6B] hover:bg-[#F5F5F5] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"><Plus size={14} /><span>添加新项目</span></button>
               </div>
             )}
             </div>

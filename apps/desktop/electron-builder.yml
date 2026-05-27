@@ -2,10 +2,12 @@ appId: com.opencodex.desktop
 productName: OpenCodex
 files:
   - dist/**/*
-  - ../app/dist/**/*
+  - renderer/**/*
 directories:
   output: release
+  buildResources: build
 mac:
+  icon: build/icon.icns
   category: public.app-category.developer-tools
   target:
     - target: dmg

@@ -6,6 +6,7 @@ import { useProjectStore } from '../stores/project';
 import { useNavigate } from 'react-router-dom';
 import { useClickOutside } from '../hooks/useClickOutside';
 import { useEscapeKey } from '../hooks/useEscapeKey';
+import { deferAfterNativeDialog } from '../utils/deferAfterNativeDialog';
 import type { ProjectInfo } from '../types';
 
 export function WelcomePage({ skillMode }: { projectName?: string; skillMode?: string | null }) {
@@ -14,6 +15,7 @@ export function WelcomePage({ skillMode }: { projectName?: string; skillMode?: s
   const [currentProjectName, setCurrentProjectName] = useState<string>(opencodeProject.getCurrentProject().name ?? '');
   const { addProject, setProject } = useProjectStore();
   const [menuProjectId, setMenuProjectId] = useState<string | null>(null);
+  const [pickingFolder, setPickingFolder] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
@@ -37,17 +39,25 @@ export function WelcomePage({ skillMode }: { projectName?: string; skillMode?: s
   };
 
   const handleAddProject = async () => {
+    if (pickingFolder) return;
+
     const api = (window as unknown as Record<string, unknown>)['electronAPI'] as
       | { openFolderDialog: () => Promise<string | null> }
       | undefined;
     if (api?.openFolderDialog) {
-      const folder = await api.openFolderDialog();
-      if (folder) {
-        const pathParts = folder.split('/');
-        const name = pathParts[pathParts.length - 1] || folder;
-        const newProject = { id: Date.now().toString(), name, path: folder };
-        addProject(newProject);
-        setProject(newProject);
+      setPickingFolder(true);
+      try {
+        const folder = await api.openFolderDialog();
+        if (folder) {
+          await deferAfterNativeDialog();
+          const pathParts = folder.split('/');
+          const name = pathParts[pathParts.length - 1] || folder;
+          const newProject = { id: Date.now().toString(), name, path: folder };
+          addProject(newProject);
+          setProject(newProject);
+        }
+      } finally {
+        setPickingFolder(false);
       }
     } else {
       folderInputRef.current?.click();

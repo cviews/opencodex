@@ -693,6 +693,7 @@ function ArchivedThreadsSettingsContent() {
     open: boolean;
     project: { id: string; name: string; path: string } | null;
   }>({ open: false, project: null });
+  const [pickingFolder, setPickingFolder] = useState(false);
   const { t } = useI18n();
 
   const handleRemoveProject = async (project: { id: string; name: string; path: string }) => {
@@ -703,15 +704,22 @@ function ArchivedThreadsSettingsContent() {
   };
 
   const handleAddProject = async () => {
+    if (pickingFolder) return;
+
     const api = (window as unknown as Record<string, unknown>)['electronAPI'] as
       | { openFolderDialog: () => Promise<string | null> }
       | undefined;
     if (api?.openFolderDialog) {
-      const folder = await api.openFolderDialog();
-      if (folder) {
-        const pathParts = folder.split('/');
-        const name = pathParts[pathParts.length - 1] || folder;
-        addProject({ id: `proj-${Date.now()}`, name, path: folder });
+      setPickingFolder(true);
+      try {
+        const folder = await api.openFolderDialog();
+        if (folder) {
+          const pathParts = folder.split('/');
+          const name = pathParts[pathParts.length - 1] || folder;
+          addProject({ id: `proj-${Date.now()}`, name, path: folder });
+        }
+      } finally {
+        setPickingFolder(false);
       }
     }
   };
@@ -725,7 +733,8 @@ function ArchivedThreadsSettingsContent() {
           <h2 className="text-sm font-medium text-[#1F1F1F]">已添加的项目</h2>
           <button
             onClick={handleAddProject}
-            className="px-4 py-1.5 text-sm text-[#1F1F1F] border border-[#E5E5E5] rounded-full hover:bg-[#F5F5F5] transition-colors"
+            disabled={pickingFolder}
+            className="px-4 py-1.5 text-sm text-[#1F1F1F] border border-[#E5E5E5] rounded-full hover:bg-[#F5F5F5] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
           >
             添加项目
           </button>

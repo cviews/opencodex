@@ -7,6 +7,7 @@ import { useClickOutside } from '../hooks/useClickOutside';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { opencodeSession } from '../services/opencodeAdapter';
 import { useSDK } from '../sdk/provider';
+import { deferAfterNativeDialog } from '../utils/deferAfterNativeDialog';
 
 type Project = { id: string; name: string; path: string };
 
@@ -16,6 +17,7 @@ export function NewChatPage({ standalone }: { standalone?: boolean }) {
   const { restartWithDir } = useSDK();
   const [menuProjectId, setMenuProjectId] = useState<string | null>(null);
   const [restarting, setRestarting] = useState(false);
+  const [pickingFolder, setPickingFolder] = useState(false);
   const [restartError, setRestartError] = useState<string | null>(null);
   const [lastAttempt, setLastAttempt] = useState<{ project: Project; isNew: boolean } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -33,11 +35,11 @@ export function NewChatPage({ standalone }: { standalone?: boolean }) {
     setRestartError(null);
     setLastAttempt({ project, isNew });
 
-    const url = await restartWithDir(project.path);
+    const { url, error } = await restartWithDir(project.path);
 
     if (!url) {
       setRestarting(false);
-      setRestartError('启动 opencode 服务失败，请重试');
+      setRestartError(error || '启动 opencode 服务失败，请重试');
       return;
     }
 
@@ -61,16 +63,24 @@ export function NewChatPage({ standalone }: { standalone?: boolean }) {
   };
 
   const handleAddProject = async () => {
+    if (pickingFolder || restarting) return;
+
     const api = (window as unknown as Record<string, unknown>)['electronAPI'] as
       | { openFolderDialog: () => Promise<string | null> }
       | undefined;
     if (api?.openFolderDialog) {
-      const folder = await api.openFolderDialog();
-      if (folder) {
+      setPickingFolder(true);
+      try {
+        const folder = await api.openFolderDialog();
+        if (!folder) return;
+
         const pathParts = folder.split('/');
         const name = pathParts[pathParts.length - 1] || folder;
         const newProject = { id: Date.now().toString(), name, path: folder };
-        switchToProject(newProject, true);
+        await deferAfterNativeDialog();
+        await switchToProject(newProject, true);
+      } finally {
+        setPickingFolder(false);
       }
     } else {
       folderInputRef.current?.click();
@@ -109,7 +119,7 @@ export function NewChatPage({ standalone }: { standalone?: boolean }) {
           <p className="text-sm text-[#6B6B6B] mb-6">选择一个本地项目目录作为工作区，opencode 需要指定项目路径</p>
           <button
             onClick={handleAddProject}
-            disabled={restarting}
+            disabled={restarting || pickingFolder}
             className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-[#2B8FFF] rounded-lg hover:bg-[#1A7AE8] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <Plus size={16} />
@@ -126,7 +136,7 @@ export function NewChatPage({ standalone }: { standalone?: boolean }) {
                 <div key={project.id} className="relative flex items-center">
                   <button
                     onClick={() => handleSelectProject(project)}
-                    disabled={restarting}
+                    disabled={restarting || pickingFolder}
                     className="flex items-center gap-3 flex-1 min-w-0 px-4 py-3 text-sm text-[#1F1F1F] hover:bg-[#F5F5F5] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     <FolderOpen size={18} className="text-[#9A9A9A] shrink-0" />
@@ -137,7 +147,7 @@ export function NewChatPage({ standalone }: { standalone?: boolean }) {
                   </button>
                   <button
                     onClick={(e) => { e.stopPropagation(); setMenuProjectId(menuProjectId === project.id ? null : project.id); }}
-                    disabled={restarting}
+                    disabled={restarting || pickingFolder}
                     className="p-2 mr-1 rounded-md text-[#9A9A9A] hover:text-[#1F1F1F] hover:bg-[#F0F0F0] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     <MoreHorizontal size={16} />
@@ -157,7 +167,7 @@ export function NewChatPage({ standalone }: { standalone?: boolean }) {
               ))}
               <button
                 onClick={handleAddProject}
-                disabled={restarting}
+                disabled={restarting || pickingFolder}
                 className="flex items-center gap-3 w-full px-4 py-3 text-sm text-[#6B6B6B] hover:bg-[#F5F5F5] hover:text-[#1F1F1F] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 <Plus size={18} className="text-[#9A9A9A]" />

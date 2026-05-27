@@ -20,7 +20,159 @@ let currentDirectory: string | undefined;
 const OPENCODE_STOP_GRACE_MS = 1500;
 const OPENCODE_HEALTH_TIMEOUT_MS = 2000;
 
+function validateProjectDirectory(directory: string): string | null {
+  const trimmed = directory.trim();
+  if (!trimmed) return '项目目录不能为空';
+  if (!fs.existsSync(trimmed)) return `项目目录不存在: ${trimmed}`;
+  if (!fs.statSync(trimmed).isDirectory()) return `不是有效的文件夹: ${trimmed}`;
+  return null;
+}
+
+function getAugmentedPath(): string {
+  const home = os.homedir();
+  const extras = [
+    path.join(home, 'bin'),
+    path.join(home, '.local', 'bin'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+  ];
+  const current = process.env.PATH || '';
+  const parts = [...extras, ...current.split(path.delimiter)].filter(Boolean);
+  return [...new Set(parts)].join(path.delimiter);
+}
+
+function resolveOpencodeBinary(): string {
+  const augmentedPath = getAugmentedPath();
+  try {
+    const found = execSync('command -v opencode-team', {
+      encoding: 'utf-8',
+      env: { ...process.env, PATH: augmentedPath },
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (found) return found;
+  } catch {
+    /* ignore */
+  }
+
+  const home = os.homedir();
+  for (const candidate of [
+    path.join(home, 'bin', 'opencode-team'),
+    path.join(home, '.local', 'bin', 'opencode-team'),
+    '/opt/homebrew/bin/opencode-team',
+    '/usr/local/bin/opencode-team',
+  ]) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+
+  if (process.platform !== 'win32') {
+    try {
+      const shell = process.env.SHELL || '/bin/zsh';
+      const found = execSync(`${shell} -ilc 'command -v opencode-team'`, {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (found) return found;
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return 'opencode-team';
+}
+
+function getOpencodeSpawnEnv(): NodeJS.ProcessEnv {
+  const pathKey = process.platform === 'win32' ? 'Path' : 'PATH';
+  return {
+    ...process.env,
+    [pathKey]: getAugmentedPath(),
+    OPENCODE_EXPERIMENTAL_AGENT_TEAMS: 'true',
+    OPENCODE_CLIENT: 'desktop',
+    OPENCODE_ENABLE_QUESTION_TOOL: 'true',
+  };
+}
+
 let orphanCleanupTimer: ReturnType<typeof setTimeout> | null = null;
+let folderDialogOpen = false;
+
+const TERMINAL_WS_TIMEOUT_MS = 15_000;
+const terminalWebSockets = new Map<string, InstanceType<typeof WebSocket>>();
+
+function closeTerminalWebSocket(channelId: string, code = 1000, reason = ''): void {
+  const socket = terminalWebSockets.get(channelId);
+  if (!socket) return;
+  terminalWebSockets.delete(channelId);
+  if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+    socket.close(code, reason);
+  }
+}
+
+function forwardTerminalSocketMessage(
+  sender: Electron.WebContents,
+  channelId: string,
+  payload: unknown,
+): void {
+  if (sender.isDestroyed()) return;
+
+  if (payload instanceof ArrayBuffer) {
+    sender.send('terminal:ws-event', {
+      type: 'message',
+      channelId,
+      binary: true,
+      data: payload,
+    });
+    return;
+  }
+
+  if (ArrayBuffer.isView(payload)) {
+    const view = payload as ArrayBufferView;
+    sender.send('terminal:ws-event', {
+      type: 'message',
+      channelId,
+      binary: true,
+      data: view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength),
+    });
+    return;
+  }
+
+  if (typeof Blob !== 'undefined' && payload instanceof Blob) {
+    void payload.arrayBuffer().then((buffer) => {
+      if (sender.isDestroyed()) return;
+      sender.send('terminal:ws-event', {
+        type: 'message',
+        channelId,
+        binary: true,
+        data: buffer,
+      });
+    });
+    return;
+  }
+
+  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(payload)) {
+    const buffer = payload as Buffer;
+    sender.send('terminal:ws-event', {
+      type: 'message',
+      channelId,
+      binary: true,
+      data: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+    });
+    return;
+  }
+
+  if (typeof payload === 'string') {
+    sender.send('terminal:ws-event', {
+      type: 'message',
+      channelId,
+      binary: false,
+      data: payload,
+    });
+  }
+}
+
+function closeAllTerminalWebSockets(): void {
+  for (const channelId of [...terminalWebSockets.keys()]) {
+    closeTerminalWebSocket(channelId);
+  }
+}
 
 function cancelOrphanCleanup(): void {
   if (orphanCleanupTimer) {
@@ -190,6 +342,9 @@ function startOpencodeServer(directory?: string): Promise<string> {
 }
 
 async function switchOpencodeDirectory(directory: string): Promise<string | null> {
+  const dirError = validateProjectDirectory(directory);
+  if (dirError) throw new Error(dirError);
+
   if (!(await isOpencodeServerHealthy())) return null;
   currentDirectory = directory;
   writeSavedProjectDirectory(directory);
@@ -205,11 +360,31 @@ function startOpencodeServerInner(directory?: string): Promise<string> {
     const hostname = DEFAULT_HOSTNAME;
     const effectiveDirectory = directory ?? readSavedProjectDirectory();
 
-    const args = ['serve', '--hostname', hostname];
+    if (effectiveDirectory) {
+      const dirError = validateProjectDirectory(effectiveDirectory);
+      if (dirError) {
+        reject(new Error(dirError));
+        return;
+      }
+    }
+
+    const args = [
+      'serve',
+      '--hostname',
+      hostname,
+      '--cors',
+      'file://',
+      '--cors',
+      'http://localhost:5173',
+      '--cors',
+      'http://127.0.0.1',
+    ];
+    const opencodeBinary = resolveOpencodeBinary();
 
     console.log(
       `[zmn-opencodex] Starting opencode serve on ${hostname} (random port)` +
-        (effectiveDirectory ? ` cwd=${effectiveDirectory}` : ''),
+        (effectiveDirectory ? ` cwd=${effectiveDirectory}` : '') +
+        ` binary=${opencodeBinary}`,
     );
 
     currentDirectory = effectiveDirectory;
@@ -217,20 +392,29 @@ function startOpencodeServerInner(directory?: string): Promise<string> {
 
     const spawnOpts: SpawnOptions = {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        OPENCODE_EXPERIMENTAL_AGENT_TEAMS: 'true',
-        OPENCODE_CLIENT: 'desktop',
-        OPENCODE_ENABLE_QUESTION_TOOL: 'true',
-      },
+      env: getOpencodeSpawnEnv(),
       cwd: effectiveDirectory || undefined,
       // Own process group so stop can SIGTERM the whole tree (Bun/MCP children).
       detached: process.platform !== 'win32',
     };
 
-    opencodeProcess = spawn('opencode-team', args, spawnOpts);
+    opencodeProcess = spawn(opencodeBinary, args, spawnOpts);
     opencodeProcessGroupId = opencodeProcess.pid ?? null;
     cancelOrphanCleanup();
+
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+
+    const timer = setTimeout(() => {
+      if (!serverUrl) {
+        finish(() => reject(new Error(`opencode server did not start within ${HEALTH_CHECK_TIMEOUT}ms`)));
+      }
+    }, HEALTH_CHECK_TIMEOUT);
 
     opencodeProcess.stdout?.on('data', (data: Buffer) => {
       const output = data.toString();
@@ -240,7 +424,7 @@ function startOpencodeServerInner(directory?: string): Promise<string> {
         const match = output.match(/on\s+(https?:\/\/[^\s]+)/);
         if (match) {
           serverUrl = match[1];
-          resolve(serverUrl);
+          finish(() => resolve(serverUrl));
         }
       }
     });
@@ -250,8 +434,12 @@ function startOpencodeServerInner(directory?: string): Promise<string> {
     });
 
     opencodeProcess.on('error', (err: Error) => {
-      console.error(`[zmn-opencodex] opencode process error: ${err.message}`);
-      reject(err);
+      const message =
+        err.message.includes('ENOENT')
+          ? `找不到 opencode-team（${opencodeBinary}），请确认已安装并在终端可运行`
+          : err.message;
+      console.error(`[zmn-opencodex] opencode process error: ${message}`);
+      finish(() => reject(new Error(message)));
     });
 
     opencodeProcess.on('exit', (code: number | null) => {
@@ -259,12 +447,6 @@ function startOpencodeServerInner(directory?: string): Promise<string> {
       opencodeProcess = null;
       opencodeProcessGroupId = null;
     });
-
-    const timer = setTimeout(() => {
-      if (!serverUrl) {
-        reject(new Error(`opencode server did not start within ${HEALTH_CHECK_TIMEOUT}ms`));
-      }
-    }, HEALTH_CHECK_TIMEOUT);
   });
 }
 
@@ -533,12 +715,33 @@ function setupIpc(): void {
     return process.platform;
   });
 
-  ipcMain.handle('dialog:openFolder', async () => {
-    const result = await dialog.showOpenDialog({
-      properties: ['openDirectory'],
-    });
-    if (result.canceled || result.filePaths.length === 0) return null;
-    return result.filePaths[0];
+  ipcMain.handle('dialog:openFolder', async (event) => {
+    if (folderDialogOpen) return null;
+
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;
+    if (!parentWindow || parentWindow.isDestroyed()) {
+      return null;
+    }
+
+    folderDialogOpen = true;
+    try {
+      if (process.platform === 'darwin') {
+        parentWindow.focus();
+      }
+
+      const result = await dialog.showOpenDialog(parentWindow, {
+        properties: ['openDirectory'],
+        title: '选择项目文件夹',
+      });
+
+      if (result.canceled || result.filePaths.length === 0) {
+        return null;
+      }
+
+      return result.filePaths[0];
+    } finally {
+      folderDialogOpen = false;
+    }
   });
 
   // --- Editor Detection ---
@@ -709,10 +912,110 @@ function setupIpc(): void {
       return { success: false, error: err.message };
     }
   });
+
+  ipcMain.handle('terminal:connect', async (event, options: { wsUrl: string }) => {
+    const wsUrl = options?.wsUrl?.trim();
+    if (!wsUrl) {
+      throw new Error('WebSocket URL is required');
+    }
+
+    const channelId = `pty-ws-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const sender = event.sender;
+
+    return await new Promise<{ channelId: string }>((resolve, reject) => {
+      const socket = new WebSocket(wsUrl);
+      socket.binaryType = 'arraybuffer';
+      let settled = false;
+
+      const finish = (handler: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        handler();
+      };
+
+      const timer = setTimeout(() => {
+        finish(() => {
+          closeTerminalWebSocket(channelId);
+          reject(new Error('WebSocket 连接超时（15 秒）'));
+        });
+      }, TERMINAL_WS_TIMEOUT_MS);
+
+      socket.addEventListener('open', () => {
+        finish(() => {
+          terminalWebSockets.set(channelId, socket);
+
+          socket.addEventListener('message', (messageEvent) => {
+            if (sender.isDestroyed()) {
+              closeTerminalWebSocket(channelId);
+              return;
+            }
+            forwardTerminalSocketMessage(sender, channelId, messageEvent.data);
+          });
+
+          socket.addEventListener('close', (closeEvent) => {
+            terminalWebSockets.delete(channelId);
+            if (!sender.isDestroyed()) {
+              sender.send('terminal:ws-event', {
+                type: 'close',
+                channelId,
+                code: closeEvent.code,
+                reason: closeEvent.reason,
+              });
+            }
+          });
+
+          socket.addEventListener('error', () => {
+            if (!sender.isDestroyed()) {
+              sender.send('terminal:ws-event', {
+                type: 'error',
+                channelId,
+              });
+            }
+          });
+
+          resolve({ channelId });
+        });
+      });
+
+      socket.addEventListener('error', () => {
+        finish(() => {
+          closeTerminalWebSocket(channelId);
+          reject(new Error('WebSocket 连接失败'));
+        });
+      });
+    });
+  });
+
+  ipcMain.handle('terminal:send', async (_event, options: { channelId: string; data: string }) => {
+    const socket = terminalWebSockets.get(options.channelId);
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return { ok: false };
+    }
+    socket.send(options.data);
+    return { ok: true };
+  });
+
+  ipcMain.handle('terminal:disconnect', async (_event, options: { channelId: string }) => {
+    closeTerminalWebSocket(options.channelId);
+    return { ok: true };
+  });
 }
 
 // --- Window Management ---
+function resolveAppIconPath(): string | undefined {
+  const candidates = [
+    path.join(__dirname, '../build/icon.png'),
+    path.join(__dirname, '../../build/icon.png'),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+
 function createWindow(): void {
+  const iconPath = resolveAppIconPath();
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -720,6 +1023,7 @@ function createWindow(): void {
     minHeight: 600,
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#202123',
+    ...(iconPath ? { icon: iconPath } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -733,7 +1037,7 @@ function createWindow(): void {
     mainWindow.loadURL(VITE_DEV_URL);
     mainWindow.webContents.openDevTools();
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../app/dist/index.html'));
+    mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
   }
 
   mainWindow.on('closed', () => {
@@ -747,6 +1051,11 @@ app.whenReady().then(async () => {
   setupApplicationMenu();
   registerOpencodeShutdownHooks();
   cleanupOrphanOpencodeTeamServers();
+
+  const iconPath = resolveAppIconPath();
+  if (process.platform === 'darwin' && iconPath && !app.isPackaged) {
+    app.dock?.setIcon(iconPath);
+  }
 
   // Try to auto-start opencode server with saved project directory
   // If no saved directory, just create window — frontend will handle project selection
@@ -780,6 +1089,7 @@ app.on('activate', () => {
 });
 
 app.on('before-quit', () => {
+  closeAllTerminalWebSockets();
   stopOpencodeServer();
 });
 

@@ -77,13 +77,13 @@ export function QuestionPanel({ question, onAnswer, onClose }: QuestionPanelProp
 
   return (
     <div className="border-b border-[#E5E5E5] bg-transparent">
-      <div className="px-4 py-3">
+      <div className="px-4 py-2">
         <div className="max-w-3xl mx-auto">
           <div className="rounded-xl border border-[#E5E5E5] bg-white overflow-hidden">
-            <div className="p-4">
-              <div className="flex items-start gap-3">
-                <div className="flex size-8 items-center justify-center rounded-full bg-[#2B8FFF]/20 text-[#2B8FFF] shrink-0 mt-0.5">
-                  <HelpCircle size={18} />
+            <div className="px-4 py-2.5">
+              <div className="flex items-start gap-2.5">
+                <div className="flex size-7 items-center justify-center rounded-full bg-[#2B8FFF]/20 text-[#2B8FFF] shrink-0 mt-0.5">
+                  <HelpCircle size={16} />
                 </div>
                 <div className="min-w-0">
                   <div className="text-[13px] font-medium leading-5 text-[#1F1F1F]">
@@ -91,7 +91,7 @@ export function QuestionPanel({ question, onAnswer, onClose }: QuestionPanelProp
                   </div>
                   {progressText && (
                     <span
-                      className="mt-1 inline-block text-xs font-medium px-2 py-0.5 rounded-full"
+                      className="mt-0.5 inline-block text-xs font-medium px-2 py-0.5 rounded-full"
                       style={{
                         backgroundColor: 'rgba(43, 143, 255, 0.08)',
                         color: ACCENT,
@@ -104,41 +104,43 @@ export function QuestionPanel({ question, onAnswer, onClose }: QuestionPanelProp
               </div>
             </div>
 
-            <div className="px-4 pb-4 space-y-1.5">
-              {question.options.map((option) => {
-                const isSelected = selected.has(option.label);
-                return (
-                  <button
-                    key={option.label}
-                    type="button"
-                    className={`w-full text-left px-3 py-2.5 rounded-lg border text-[13px] transition-all duration-200 flex items-center justify-between
-                      ${isSelected
-                        ? 'bg-[#2B8FFF]/10 border-[#2B8FFF]/30 text-[#1F1F1F]'
-                        : 'bg-[#F9F9F9] border-[#E5E5E5] hover:border-[#CCC] hover:bg-[#F0F0F0] text-[#666] hover:text-[#1F1F1F]'
-                      }
-                    `}
-                    onClick={() => handleOptionClick(option.label)}
-                  >
-                    <span className="min-w-0">
-                      <span className="font-medium truncate block">{option.label}</span>
-                      {option.description ? (
-                        <span className="text-[11px] text-[#9A9A9A] font-mono truncate block mt-0.5">
-                          {option.description}
-                        </span>
+            <div className="px-4 pb-3">
+              <div className="scrollbar-hover max-h-36 space-y-1 overflow-y-auto pr-1">
+                {question.options.map((option) => {
+                  const isSelected = selected.has(option.label);
+                  return (
+                    <button
+                      key={option.label}
+                      type="button"
+                      className={`w-full text-left px-3 py-2 rounded-lg border text-[13px] transition-all duration-200 flex items-center justify-between
+                        ${isSelected
+                          ? 'bg-[#2B8FFF]/10 border-[#2B8FFF]/30 text-[#1F1F1F]'
+                          : 'bg-[#F9F9F9] border-[#E5E5E5] hover:border-[#CCC] hover:bg-[#F0F0F0] text-[#666] hover:text-[#1F1F1F]'
+                        }
+                      `}
+                      onClick={() => handleOptionClick(option.label)}
+                    >
+                      <span className="min-w-0">
+                        <span className="font-medium truncate block">{option.label}</span>
+                        {option.description ? (
+                          <span className="text-[11px] text-[#9A9A9A] font-mono truncate block mt-0.5">
+                            {option.description}
+                          </span>
+                        ) : null}
+                      </span>
+                      {isSelected ? (
+                        <div className="size-4 rounded-full bg-[#2B8FFF] flex items-center justify-center shrink-0 ml-2">
+                          <Check size={10} className="text-white" strokeWidth={3} />
+                        </div>
                       ) : null}
-                    </span>
-                    {isSelected ? (
-                      <div className="size-4 rounded-full bg-[#2B8FFF] flex items-center justify-center shrink-0 ml-2">
-                        <Check size={10} className="text-white" strokeWidth={3} />
-                      </div>
-                    ) : null}
-                  </button>
-                );
-              })}
+                    </button>
+                  );
+                })}
+              </div>
 
               {question.allowCustom && (
-                <div className="pt-3 mt-2" style={{ borderTop: `1px solid ${BORDER}` }}>
-                  <label className="block text-[10px] font-semibold uppercase tracking-[0.16em] mb-2" style={{ color: TEXT_SECONDARY }}>
+                <div className="pt-2 mt-2" style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <label className="block text-[10px] font-semibold uppercase tracking-[0.16em] mb-1.5" style={{ color: TEXT_SECONDARY }}>
                     自定义回答
                   </label>
                   <input
@@ -147,14 +149,14 @@ export function QuestionPanel({ question, onAnswer, onClose }: QuestionPanelProp
                     onChange={(e) => setCustomValue(e.target.value)}
                     onKeyDown={handleInputKeyDown}
                     placeholder="请输入..."
-                    className="w-full px-3 py-2 rounded-lg bg-[#F9F9F9] border border-[#E5E5E5] text-[13px] outline-none transition-colors focus:border-[#2B8FFF] focus:bg-white"
+                    className="w-full px-3 py-1.5 rounded-lg bg-[#F9F9F9] border border-[#E5E5E5] text-[13px] outline-none transition-colors focus:border-[#2B8FFF] focus:bg-white"
                     style={{ color: TEXT_PRIMARY }}
                   />
                 </div>
               )}
 
               {question.multiSelect && (
-                <div className="flex items-center gap-2 pt-2">
+                <div className="flex items-center gap-2 pt-1.5">
                   <button
                     type="button"
                     className="inline-flex items-center gap-1 px-4 py-1.5 rounded-md text-xs font-medium text-white transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"

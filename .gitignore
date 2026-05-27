@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.turbo/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+apps/app/dist/
+apps/desktop/dist/
+packages/*/dist/
+.playwright-mcp/
+.sisyphus/

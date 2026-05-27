@@ -1,0 +1,16 @@
+{
+  "name": "zmn-codex-desktop",
+  "private": true,
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "dev": "bash scripts/dev.sh",
+    "dev:stop": "bash scripts/kill-opencode-serve.sh",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "type-check": "turbo run type-check"
+  },
+  "devDependencies": {
+    "turbo": "^2",
+    "typescript": "^5.8"
+  }
+}

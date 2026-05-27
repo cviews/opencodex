@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true
+  },
+  "references": [
+    { "path": "apps/app/tsconfig.json" },
+    { "path": "apps/desktop/tsconfig.json" },
+    { "path": "packages/ui/tsconfig.json" },
+    { "path": "packages/types/tsconfig.json" },
+    { "path": "packages/server/tsconfig.json" }
+  ],
+  "files": []
+}

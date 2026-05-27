@@ -1,0 +1,15 @@
+appId: com.zmn.codex-desktop
+productName: ZMN Codex Desktop
+files:
+  - dist/**/*
+  - ../app/dist/**/*
+directories:
+  output: release
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch:
+        - universal
+dmg:
+  artifactName: ${name}-${version}.${ext}

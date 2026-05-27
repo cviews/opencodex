@@ -8,6 +8,7 @@ dist/
 !.env.example
 apps/app/dist/
 apps/desktop/dist/
+apps/desktop/release/
 packages/*/dist/
 .playwright-mcp/
 .sisyphus/

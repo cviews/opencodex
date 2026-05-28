@@ -1,4 +1,5 @@
-import { useEffect, useState, useRef, useCallback, useMemo, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo, useLayoutEffect, type CSSProperties, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { ArrowLeft, Check, ChevronDown, ChevronRight, Cpu, FileText, Folder, Info, Loader2, Plus, Puzzle, Search, Settings, Sun, Trash2, Users, X, Zap } from 'lucide-react';
 import { opencodeEngine, opencodeSettings, opencodeProvider, opencodeSettingsProvider } from '../services/opencodeAdapter';
 import { describeAgentPermission } from '../services/permissionNormalize';
@@ -28,8 +29,8 @@ type SettingsSection = 'general' | 'appearance' | 'agent-config' | 'archived-thr
 type PromptMode = 'edit' | 'preview';
 type PromptEditMode = PromptMode;
 
-const inputClass = 'w-full px-3 py-2 text-sm border border-[#E5E5E5] rounded-md text-[#1F1F1F] placeholder-[#9A9A9A] focus:outline-none focus:border-[#2B8FFF]';
-const buttonClass = 'px-3 py-1.5 text-sm text-[#1F1F1F] border border-[#E5E5E5] rounded-md hover:bg-[#F5F5F5] transition-colors';
+const inputClass = 'settings-input';
+const buttonClass = 'settings-button';
 const DEFAULT_AGENT_PERMISSION: Record<string, string> = {
   read: 'allow',
   glob: 'allow',
@@ -52,24 +53,148 @@ function normalizePromptText(value: string): string {
   return value.replace(/\r\n/g, '\n');
 }
 
-function useDropDirection(ref: React.RefObject<HTMLElement | null>, isOpen: boolean): boolean {
-  const [dropUp, setDropUp] = useState(true);
-  useEffect(() => {
-    if (!isOpen || !ref.current) return;
-    const update = () => {
-      const el = ref.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      const DROPDOWN_EST = 200;
-      const spaceAbove = rect.top;
-      const spaceBelow = window.innerHeight - rect.bottom;
-      setDropUp(spaceAbove >= DROPDOWN_EST || spaceBelow < DROPDOWN_EST);
-    };
+const DROPDOWN_GAP = 4;
+const VIEWPORT_PADDING = 8;
+
+type MenuPlacement = 'bottom' | 'top';
+type MenuAlign = 'start' | 'end';
+
+interface FloatingMenuStyle {
+  top: number;
+  left: number;
+  width: number;
+  maxHeight: number;
+  placement: MenuPlacement;
+}
+
+interface FloatingMenuOptions {
+  menuWidth?: number;
+  align?: MenuAlign;
+}
+
+function useFloatingMenuStyle(
+  triggerRef: React.RefObject<HTMLElement | null>,
+  menuRef: React.RefObject<HTMLElement | null>,
+  isOpen: boolean,
+  preferredMaxHeight: number,
+  contentKey: string | number,
+  options: FloatingMenuOptions = {},
+): FloatingMenuStyle | null {
+  const { menuWidth: fixedWidth, align = 'start' } = options;
+  const [style, setStyle] = useState<FloatingMenuStyle | null>(null);
+
+  const update = useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger || !isOpen) {
+      setStyle(null);
+      return;
+    }
+
+    const rect = trigger.getBoundingClientRect();
+    const menuEl = menuRef.current;
+    const measuredHeight = menuEl?.offsetHeight ?? preferredMaxHeight;
+    const width = fixedWidth ?? Math.max(rect.width, 200);
+
+    const spaceBelow = window.innerHeight - rect.bottom - VIEWPORT_PADDING;
+    const spaceAbove = rect.top - VIEWPORT_PADDING;
+
+    let placement: MenuPlacement = 'bottom';
+    if (spaceBelow < measuredHeight && spaceAbove > spaceBelow) {
+      placement = 'top';
+    } else if (spaceBelow < measuredHeight && spaceAbove <= spaceBelow) {
+      placement = 'bottom';
+    }
+
+    const available = placement === 'bottom' ? spaceBelow : spaceAbove;
+    const maxHeight = Math.min(preferredMaxHeight, Math.max(120, available - DROPDOWN_GAP));
+
+    let top: number;
+    if (placement === 'bottom') {
+      top = rect.bottom + DROPDOWN_GAP;
+    } else {
+      const height = menuEl ? Math.min(menuEl.offsetHeight, maxHeight) : maxHeight;
+      top = Math.max(VIEWPORT_PADDING, rect.top - DROPDOWN_GAP - height);
+    }
+
+    let left = align === 'end' ? rect.right - width : rect.left;
+    if (left + width > window.innerWidth - VIEWPORT_PADDING) {
+      left = window.innerWidth - width - VIEWPORT_PADDING;
+    }
+    left = Math.max(VIEWPORT_PADDING, left);
+
+    setStyle({ top, left, width, maxHeight, placement });
+  }, [triggerRef, menuRef, isOpen, preferredMaxHeight, fixedWidth, align]);
+
+  useLayoutEffect(() => {
+    if (!isOpen) {
+      setStyle(null);
+      return;
+    }
+
     update();
+    const raf = requestAnimationFrame(update);
     window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
-  }, [isOpen, ref]);
-  return dropUp;
+    window.addEventListener('scroll', update, true);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [isOpen, update, contentKey]);
+
+  return style;
+}
+
+function FloatingActionMenu({
+  open,
+  onClose,
+  triggerRef,
+  menuWidth = 160,
+  align = 'end',
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  triggerRef: React.RefObject<HTMLElement | null>;
+  menuWidth?: number;
+  align?: MenuAlign;
+  children: ReactNode;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuStyle = useFloatingMenuStyle(
+    triggerRef,
+    menuRef,
+    open,
+    280,
+    'action-menu',
+    { menuWidth, align },
+  );
+
+  useClickOutside([triggerRef, menuRef], onClose, open);
+
+  if (!open || !menuStyle) return null;
+
+  return createPortal(
+    <div
+      ref={menuRef}
+      className="fixed z-[100] bg-[var(--app-elevated)] border border-[var(--app-border)] rounded-lg shadow-lg py-1 overflow-hidden"
+      style={{
+        top: menuStyle.top,
+        left: menuStyle.left,
+        width: menuStyle.width,
+        maxHeight: menuStyle.maxHeight,
+      }}
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
+function parseMaxHeightPx(maxH: string): number {
+  if (maxH.includes('72')) return 288;
+  if (maxH.includes('48')) return 192;
+  return 240;
 }
 
 function parseOptionalPositiveInteger(value: string): number | undefined {
@@ -102,68 +227,94 @@ function SearchableSelect({
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const dropUp = useDropDirection(containerRef, open);
-
-  useEffect(() => {
-    if (open && searchRef.current) searchRef.current.focus();
-  }, [open]);
-
-  useClickOutside([containerRef], () => {
-    setOpen(false);
-    setSearch('');
-  });
+  const preferredMaxHeight = parseMaxHeightPx(maxH);
 
   const selected = options.find((o) => o.value === value);
   const filtered = searchable
     ? options.filter((o) => !search || o.label.toLowerCase().includes(search.toLowerCase()) || o.value.toLowerCase().includes(search.toLowerCase()))
     : options;
 
-  return (
-    <div className="relative" ref={containerRef}>
-      <button
-        onClick={() => { setOpen(!open); setSearch(''); }}
-        className="w-full flex items-center justify-between pl-3 pr-10 py-2 text-sm text-[#1F1F1F] bg-white border border-[#E5E5E5] rounded-md focus:outline-none hover:bg-[#F5F5F5] focus:bg-[#F5F5F5] cursor-pointer text-left"
-      >
-        <span className="truncate">{selected?.label ?? value}</span>
-        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[#9A9A9A] pointer-events-none">
-          <ChevronDown size={16} />
-        </span>
-      </button>
-      {open && (
-        <div className={`absolute left-0 w-full min-w-[200px] bg-white border border-[#E5E5E5] rounded-lg shadow-lg z-50 ${dropUp ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
-          {searchable && (
-            <div className="px-2 py-1.5 border-b border-[#E5E5E5]">
-              <div className="flex items-center gap-1.5">
-                <Search size={12} className="text-[#9A9A9A]" />
-                <input
-                  ref={searchRef}
-                  type="text"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder={searchPlaceholder ?? '搜索...'}
-                  className="w-full text-xs text-[#1F1F1F] placeholder-[#9A9A9A] bg-transparent focus:outline-none"
-                />
-              </div>
-            </div>
-          )}
-          <div className={`${maxH} overflow-y-auto py-1`}>
-            {filtered.length > 0
-              ? filtered.map((opt) => (
-                  <button
-                    key={opt.value}
-                    onClick={() => { onChange(opt.value); setOpen(false); setSearch(''); }}
-                    className={`flex items-center w-full px-3 py-1.5 text-xs transition-colors text-left ${opt.value === value ? 'text-[#1F1F1F] bg-[#F0F0F0]' : 'text-[#6B6B6B] hover:text-[#1F1F1F] hover:bg-[#F5F5F5]'}`}
-                  >
-                    {opt.icon && <span className="mr-2">{opt.icon}</span>}
-                    <span className="truncate">{opt.label}</span>
-                  </button>
-                ))
-              : <div className="px-3 py-4 text-xs text-[#9A9A9A] text-center">{emptyText ?? '无数据'}</div>
-            }
+  const menuStyle = useFloatingMenuStyle(
+    triggerRef,
+    menuRef,
+    open,
+    preferredMaxHeight + (searchable ? 44 : 0),
+    `${filtered.length}:${search}`,
+    { align: 'start' },
+  );
+
+  useEffect(() => {
+    if (open && searchRef.current) searchRef.current.focus();
+  }, [open]);
+
+  useClickOutside([containerRef, menuRef], () => {
+    setOpen(false);
+    setSearch('');
+  }, open);
+
+  const menu = open && menuStyle ? createPortal(
+    <div
+      ref={menuRef}
+      className="fixed z-[100] bg-[var(--app-elevated)] border border-[var(--app-border)] rounded-lg shadow-lg overflow-hidden"
+      style={{
+        top: menuStyle.top,
+        left: menuStyle.left,
+        width: menuStyle.width,
+        maxHeight: menuStyle.maxHeight,
+      }}
+    >
+      {searchable && (
+        <div className="px-2 py-1.5 border-b border-[var(--app-border)]">
+          <div className="flex items-center gap-1.5">
+            <Search size={12} className="text-[var(--app-text-muted)]" />
+            <input
+              ref={searchRef}
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={searchPlaceholder ?? '搜索...'}
+              className="w-full text-xs text-[var(--app-text)] placeholder-[var(--app-text-muted)] bg-transparent focus:outline-none"
+            />
           </div>
         </div>
       )}
+      <div className="overflow-y-auto py-1" style={{ maxHeight: menuStyle.maxHeight - (searchable ? 44 : 0) }}>
+        {filtered.length > 0
+          ? filtered.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => { onChange(opt.value); setOpen(false); setSearch(''); }}
+                className={`flex items-center w-full px-3 py-1.5 text-xs transition-colors text-left ${opt.value === value ? 'text-[var(--app-text)] bg-[var(--app-active)]' : 'text-[var(--app-text-secondary)] hover:text-[var(--app-text)] hover:bg-[var(--app-hover)]'}`}
+              >
+                {opt.icon && <span className="mr-2">{opt.icon}</span>}
+                <span className="truncate">{opt.label}</span>
+              </button>
+            ))
+          : <div className="px-3 py-4 text-xs text-[var(--app-text-muted)] text-center">{emptyText ?? '无数据'}</div>
+        }
+      </div>
+    </div>,
+    document.body,
+  ) : null;
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={() => { setOpen(!open); setSearch(''); }}
+        className="w-full flex items-center justify-between pl-3 pr-10 py-2 text-sm text-[var(--app-text)] bg-[var(--app-elevated)] border border-[var(--app-border)] rounded-md focus:outline-none hover:bg-[var(--app-hover)] focus:bg-[var(--app-hover)] cursor-pointer text-left"
+      >
+        <span className="truncate">{selected?.label ?? value}</span>
+        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)] pointer-events-none">
+          <ChevronDown size={16} />
+        </span>
+      </button>
+      {menu}
     </div>
   );
 }
@@ -193,22 +344,22 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   return (
     <div className="fixed inset-0 z-40 flex">
       <div className="absolute inset-0 bg-black/20" onClick={onClose} />
-      <div className="relative w-full h-full bg-white flex">
-        <div className="w-64 border-r border-[#E5E5E5] flex flex-col">
+      <div className="relative w-full h-full app-settings-shell flex">
+        <div className="w-64 app-settings-nav app-border-r flex flex-col">
           <div
-            className="flex items-center justify-between px-4 py-3 pt-[38px] border-b border-[#E5E5E5]"
+            className="flex items-center justify-between px-4 py-3 pt-[38px] app-border-b"
             style={{ WebkitAppRegion: 'drag' } as CSSProperties}
           >
             <div className="flex items-center gap-2" style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}>
               <button
                 onClick={(e) => { e.stopPropagation(); onClose(); }}
-                className="text-[#6B6B6B] hover:text-[#1F1F1F] p-1 transition-colors"
+                className="text-[var(--app-text-secondary)] hover:text-[var(--app-text)] p-1 transition-colors"
               >
                 <ArrowLeft size={16} />
               </button>
               <button
                 onClick={(e) => { e.stopPropagation(); onClose(); }}
-                className="text-sm font-medium text-[#1F1F1F] hover:text-[#2B8FFF] transition-colors"
+                className="text-sm font-medium text-[var(--app-text)] hover:text-[#2B8FFF] transition-colors"
               >
                 返回应用
               </button>
@@ -222,10 +373,8 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
               <button
                 key={section.id}
                 onClick={() => setActiveSection(section.id)}
-                className={`flex items-center gap-2 w-full px-4 py-2 text-sm transition-colors ${
-                  activeSection === section.id
-                    ? 'text-[#1F1F1F] bg-[#F0F0F0]'
-                    : 'text-[#6B6B6B] hover:text-[#1F1F1F] hover:bg-[#F5F5F5]'
+                className={`flex items-center gap-2 w-full px-4 py-2 text-sm transition-colors app-settings-nav-item ${
+                  activeSection === section.id ? 'app-settings-nav-item--active' : ''
                 }`}
               >
                 <span>{section.label}</span>
@@ -233,7 +382,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
             ))}
           </div>
         </div>
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto app-settings-content">
           {activeSection === 'general' && <GeneralSettingsContent />}
           {activeSection === 'appearance' && <AppearanceSettingsContent />}
           {activeSection === 'agent-config' && <AgentConfigSettingsContent />}
@@ -314,7 +463,7 @@ function GeneralSettingsContent() {
 }
 
 function AppearanceSettingsContent() {
-  const { theme, setTheme, language, setLanguage, selectedEditor, setSelectedEditor, availableEditors } = useSettingsStore();
+  const { theme, setTheme, language, setLanguage } = useSettingsStore();
   const { t } = useI18n();
 
   const themeOptions: { value: 'system' | 'light' | 'dark'; label: string }[] = [
@@ -326,12 +475,6 @@ function AppearanceSettingsContent() {
   const languageOptions: { value: 'zh-CN' | 'en'; label: string }[] = [
     { value: 'zh-CN', label: t('appearance_language_zh') },
     { value: 'en', label: t('appearance_language_en') },
-  ];
-
-  const editorOptions: { value: 'vscode' | 'finder' | 'terminal'; label: string }[] = [
-    { value: 'vscode', label: 'VS Code' },
-    { value: 'finder', label: 'Finder' },
-    { value: 'terminal', label: 'Terminal' },
   ];
 
   return (
@@ -348,19 +491,19 @@ function AppearanceSettingsContent() {
                 className={`flex flex-col items-center gap-2 p-1 rounded-xl transition-all ${
                   theme === option.value
                     ? 'ring-2 ring-[#2B8FFF]'
-                    : 'hover:bg-[#F5F5F5]'
+                    : 'hover:bg-[var(--app-hover)]'
                 }`}
               >
                 <div
                   className={`w-[140px] h-[90px] rounded-lg border ${
                     option.value === 'dark'
-                      ? 'bg-[#1F1F1F] border-[#333333]'
+                      ? 'bg-[#1E1E1E] border-[#3A3A3A]'
                       : option.value === 'light'
-                      ? 'bg-white border-[#E5E5E5]'
-                      : 'bg-[#F5F5F5] border-[#E5E5E5]'
+                      ? 'bg-white border-[var(--app-border)]'
+                      : 'bg-[var(--app-bg-secondary)] border-[var(--app-border)]'
                   }`}
                 />
-                <span className="text-sm text-[#1F1F1F]">{option.label}</span>
+                <span className="text-sm text-[var(--app-text)]">{option.label}</span>
               </button>
             ))}
           </div>
@@ -370,42 +513,14 @@ function AppearanceSettingsContent() {
         </Section>
 
         <Section title={t('appearance_language')} desc={t('appearance_language_desc')}>
-          <div className="flex items-center justify-between">
-            <div />
-            <div className="relative">
-              <select
-                value={language}
-                onChange={(e) => setLanguage(e.target.value as 'zh-CN' | 'en')}
-                className="appearance-none pl-4 pr-10 py-2 text-sm text-[#1F1F1F] bg-white border border-[#E5E5E5] rounded-full focus:outline-none focus:border-[#2B8FFF] cursor-pointer"
-              >
-                {languageOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[#9A9A9A] pointer-events-none">
-                <ChevronRight size={16} className="rotate-90" />
-              </span>
-            </div>
+          <div className="max-w-xs ml-auto">
+            <SearchableSelect
+              options={languageOptions.map((option) => ({ value: option.value, label: option.label }))}
+              value={language}
+              onChange={(value) => setLanguage(value as 'zh-CN' | 'en')}
+              searchable={false}
+            />
           </div>
-        </Section>
-
-        <Section title={t('appearance_editor')} desc={t('appearance_editor_desc')}>
-          <Card>
-            {editorOptions
-              .filter((option) => availableEditors[option.value])
-              .map((option) => (
-                <button
-                  key={option.value}
-                  onClick={() => setSelectedEditor(option.value)}
-                  className="flex items-center justify-between w-full p-4 text-left"
-                >
-                  <span className="text-sm text-[#1F1F1F]">{option.label}</span>
-                  {selectedEditor === option.value && <Check size={16} className="text-[#2B8FFF]" />}
-                </button>
-              ))}
-          </Card>
         </Section>
 
         <Section title={t('appearance_window')} desc={t('appearance_window_desc')}>
@@ -433,12 +548,10 @@ function AgentConfigSettingsContent() {
   });
   const [configDropdownProviderId, setConfigDropdownProviderId] = useState<string | null>(null);
   const [reloadToast, setReloadToast] = useState<string | null>(null);
-  const configDropdownRef = useRef<HTMLDivElement>(null);
+  const configDropdownTriggerRef = useRef<HTMLButtonElement>(null);
   const addProvider = useProviderStore((s) => s.addProvider);
   const removeProvider = useProviderStore((s) => s.removeProvider);
   const reloadServerConfig = useProviderStore((s) => s.reloadServerConfig);
-
-  useClickOutside([configDropdownRef], () => setConfigDropdownProviderId(null), configDropdownProviderId !== null);
 
   useEffect(() => {
     opencodeProvider.fetchConnectedProviders().then((connected) => {
@@ -567,49 +680,56 @@ return (
                     )}
                     <div className="relative">
                       <button
+                        ref={configDropdownProviderId === provider.id ? configDropdownTriggerRef : undefined}
+                        type="button"
                         onClick={() => setConfigDropdownProviderId(configDropdownProviderId === provider.id ? null : provider.id)}
-                        className="p-1 text-[#9A9A9A] hover:text-[#1F1F1F] transition-colors"
+                        className="p-1 text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition-colors"
                       >
                         <Settings size={14} />
                       </button>
-                      {configDropdownProviderId === provider.id && (
-                        <div
-                          ref={configDropdownRef}
-                          className="absolute left-0 top-8 z-10 w-40 bg-white border border-[#E5E5E5] rounded-lg shadow-lg py-1"
+                      <FloatingActionMenu
+                        open={configDropdownProviderId === provider.id}
+                        onClose={() => setConfigDropdownProviderId(null)}
+                        triggerRef={configDropdownTriggerRef}
+                        menuWidth={168}
+                        align="end"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setModelConfigModal({ open: true, providerId: provider.id, providerName: provider.name });
+                            setConfigDropdownProviderId(null);
+                          }}
+                          className="w-full px-3 py-1.5 text-sm text-left text-[var(--app-text)] hover:bg-[var(--app-hover)]"
                         >
-                          <button
-                            onClick={() => {
-                              setModelConfigModal({ open: true, providerId: provider.id, providerName: provider.name });
-                              setConfigDropdownProviderId(null);
-                            }}
-                            className="w-full px-3 py-1.5 text-sm text-left text-[#1F1F1F] hover:bg-[#F5F5F5]"
-                          >
-                            添加模型
-                          </button>
-                          <button
-                            onClick={() => {
-                              setApiKeyModalReconfig(true);
-                              setApiKeyModalProvider(provider.id);
-                              setConfigDropdownProviderId(null);
-                            }}
-                            className="w-full px-3 py-1.5 text-sm text-left text-[#1F1F1F] hover:bg-[#F5F5F5]"
-                          >
-                            修改密钥
-                          </button>
-                          <button
-                            onClick={() => { handleReloadConfig(); setConfigDropdownProviderId(null); }}
-                            className="w-full px-3 py-1.5 text-sm text-left text-[#1F1F1F] hover:bg-[#F5F5F5]"
-                          >
-                            刷新配置
-                          </button>
-                          <button
-                            onClick={() => { handleDisconnect(provider.id); setConfigDropdownProviderId(null); }}
-                            className="w-full px-3 py-1.5 text-sm text-left text-[#EC5F66] hover:bg-[#F5F5F5]"
-                          >
-                            断开
-                          </button>
-                        </div>
-                      )}
+                          添加模型
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setApiKeyModalReconfig(true);
+                            setApiKeyModalProvider(provider.id);
+                            setConfigDropdownProviderId(null);
+                          }}
+                          className="w-full px-3 py-1.5 text-sm text-left text-[var(--app-text)] hover:bg-[var(--app-hover)]"
+                        >
+                          修改密钥
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { handleReloadConfig(); setConfigDropdownProviderId(null); }}
+                          className="w-full px-3 py-1.5 text-sm text-left text-[var(--app-text)] hover:bg-[var(--app-hover)]"
+                        >
+                          刷新配置
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { handleDisconnect(provider.id); setConfigDropdownProviderId(null); }}
+                          className="w-full px-3 py-1.5 text-sm text-left text-[#EC5F66] hover:bg-[var(--app-hover)]"
+                        >
+                          断开
+                        </button>
+                      </FloatingActionMenu>
                     </div>
                   </div>
                 </div>
@@ -1594,8 +1714,8 @@ function TeamModal(props: {
 function Header({ title, desc }: { title: string; desc: string }) {
   return (
     <div className="mb-8">
-      <h1 className="text-2xl font-semibold text-[#1F1F1F] mb-2">{title}</h1>
-      <p className="text-sm text-[#6B6B6B]">{desc}</p>
+      <h1 className="text-2xl font-semibold text-[var(--app-text)] mb-2">{title}</h1>
+      <p className="text-sm text-[var(--app-text-secondary)]">{desc}</p>
     </div>
   );
 }
@@ -1603,8 +1723,8 @@ function Header({ title, desc }: { title: string; desc: string }) {
 function Section({ title, desc, children }: { title: string; desc: string; children: ReactNode }) {
   return (
     <section>
-      <h2 className="text-sm font-medium text-[#1F1F1F] mb-1">{title}</h2>
-      <p className="text-xs text-[#6B6B6B] mb-4">{desc}</p>
+      <h2 className="text-sm font-medium text-[var(--app-text)] mb-1">{title}</h2>
+      <p className="text-xs text-[var(--app-text-secondary)] mb-4">{desc}</p>
       {children}
     </section>
   );
@@ -1612,7 +1732,7 @@ function Section({ title, desc, children }: { title: string; desc: string; child
 
 function Card({ children }: { children: ReactNode }) {
   return (
-    <div className="border border-[#E5E5E5] rounded-lg divide-y divide-[#E5E5E5]">
+    <div className="settings-card">
       {children}
     </div>
   );
@@ -1620,7 +1740,7 @@ function Card({ children }: { children: ReactNode }) {
 
 function Empty({ text }: { text: string }) {
   return (
-    <div className="p-6 text-sm text-[#9A9A9A] text-center">{text}</div>
+    <div className="p-6 text-sm text-[var(--app-text-muted)] text-center">{text}</div>
   );
 }
 
@@ -1628,7 +1748,7 @@ function SmallButton({ children, onClick }: { children: ReactNode; onClick: () =
   return (
     <button
       onClick={onClick}
-      className="inline-flex items-center gap-1 px-3 py-1.5 text-sm border border-[#E5E5E5] rounded-md hover:bg-[#F5F5F5] transition-colors text-[#1F1F1F]"
+      className="settings-button inline-flex items-center gap-1"
     >
       {children}
     </button>
@@ -1639,8 +1759,8 @@ function SettingRow({ title, desc, children, loading = false }: { title: string;
   return (
     <div className="flex items-center justify-between p-4 gap-4">
       <div>
-        <div className="text-sm font-medium text-[#1F1F1F]">{title}</div>
-        <div className="text-xs text-[#6B6B6B] mt-1">{desc}</div>
+        <div className="text-sm font-medium text-[var(--app-text)]">{title}</div>
+        <div className="text-xs text-[var(--app-text-secondary)] mt-1">{desc}</div>
       </div>
       <div className="flex items-center gap-2">
         {loading && <Loader2 size={14} className="animate-spin text-[#9A9A9A]" />}

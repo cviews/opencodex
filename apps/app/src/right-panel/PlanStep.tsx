@@ -11,13 +11,13 @@ export function PlanStep({ title, status }: PlanStepProps) {
   };
 
   const textClass = {
-    completed: 'text-[#9A9A9A] opacity-60',
-    current: 'text-[#1F1F1F] font-medium',
-    pending: 'text-[#9A9A9A]',
+    completed: 'text-[var(--app-text-muted)] opacity-60',
+    current: 'text-[var(--app-text)] font-medium',
+    pending: 'text-[var(--app-text-muted)]',
   };
 
   return (
-    <div className={`flex items-center gap-2 py-0.5 text-xs cursor-pointer hover:bg-[#F0F0F0] rounded px-1 transition-colors ${textClass[status]}`}>
+    <div className={`flex items-center gap-2 py-0.5 text-xs cursor-pointer hover:bg-[var(--app-hover)] rounded px-1 transition-colors ${textClass[status]}`}>
       {indicator[status]}
       <span>{title}</span>
     </div>

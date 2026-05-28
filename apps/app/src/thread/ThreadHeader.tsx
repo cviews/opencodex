@@ -164,7 +164,7 @@ export function ThreadHeader({ leftCollapsed, onToggleLeft }: { leftCollapsed?: 
 
   return (
     <>
-      <div ref={headerRef} className={`relative flex items-center justify-between px-4 py-2 border-b border-[#E5E5E5] bg-white ${leftCollapsed ? 'pt-[38px]' : ''}`}>
+      <div ref={headerRef} className={`relative flex items-center justify-between px-4 py-2 app-border-b bg-[var(--app-bg)] ${leftCollapsed ? 'pt-[38px]' : ''}`}>
         {leftCollapsed && (
           <div
             className="absolute inset-x-0 top-0 h-[38px]"
@@ -176,14 +176,14 @@ export function ThreadHeader({ leftCollapsed, onToggleLeft }: { leftCollapsed?: 
           style={leftCollapsed ? { WebkitAppRegion: 'no-drag' } as React.CSSProperties : undefined}
         >
           {leftCollapsed && onToggleLeft && (
-            <button onClick={onToggleLeft} className="p-1 rounded-md text-[#9A9A9A] hover:text-[#1F1F1F] hover:bg-[#F0F0F0] transition-colors">
+            <button onClick={onToggleLeft} className="p-1 rounded-md text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-hover)] transition-colors">
               <PanelLeftOpen size={16} />
             </button>
           )}
           <h2
             data-header-trigger
             onClick={handleOpenDropdown}
-            className="text-sm font-medium text-[#1F1F1F] truncate cursor-pointer select-none hover:text-[#2B8FFF] transition-colors"
+            className="text-sm font-medium text-[var(--app-text)] truncate cursor-pointer select-none hover:text-[#2B8FFF] transition-colors"
           >
             {sessionName}
           </h2>
@@ -200,7 +200,7 @@ export function ThreadHeader({ leftCollapsed, onToggleLeft }: { leftCollapsed?: 
           <button
             data-header-trigger
             onClick={handleOpenDropdown}
-            className="text-[#9A9A9A] hover:text-[#1F1F1F] p-1 rounded hover:bg-[#F0F0F0] transition-colors"
+            className="text-[var(--app-text-muted)] hover:text-[var(--app-text)] p-1 rounded hover:bg-[var(--app-hover)] transition-colors"
           >
             <MoreHorizontal size={16} />
           </button>
@@ -209,12 +209,12 @@ export function ThreadHeader({ leftCollapsed, onToggleLeft }: { leftCollapsed?: 
         {showDropdown && (
           <div
             data-header-dropdown
-            className="fixed z-50 min-w-[140px] bg-white border border-[#E5E5E5] rounded-lg shadow-lg py-1"
+            className="fixed z-50 min-w-[140px] bg-[var(--app-elevated)] border border-[var(--app-border)] rounded-lg shadow-lg py-1"
             style={{ left: dropdownPos.x, top: dropdownPos.y }}
           >
             <button
               onClick={openRenameModal}
-              className="flex items-center w-full px-3 py-1.5 text-sm text-[#1F1F1F] hover:bg-[#F5F5F5] transition-colors"
+              className="flex items-center w-full px-3 py-1.5 text-sm text-[var(--app-text)] hover:bg-[var(--app-hover)] transition-colors"
             >
               重命名
             </button>
@@ -240,7 +240,7 @@ export function ThreadHeader({ leftCollapsed, onToggleLeft }: { leftCollapsed?: 
       {teamModeEnabled && currentTeam && (
         <div
           ref={memberDotsRef}
-          className="flex items-center px-4 h-6 bg-[#FAFAFA] border-b border-[#E5E5E5]"
+          className="flex items-center px-4 h-6 bg-[var(--app-bg-tertiary)] app-border-b"
           onMouseLeave={() => setMemberTooltip(null)}
         >
           <div className="flex items-center gap-1.5">
@@ -263,7 +263,7 @@ export function ThreadHeader({ leftCollapsed, onToggleLeft }: { leftCollapsed?: 
               </div>
             ))}
           </div>
-          <span className="ml-2 text-xs text-[#9A9A9A]">
+          <span className="ml-2 text-xs text-[var(--app-text-muted)]">
             {memberCount === 0
               ? '无成员'
               : workingCount > 0
@@ -272,7 +272,7 @@ export function ThreadHeader({ leftCollapsed, onToggleLeft }: { leftCollapsed?: 
           </span>
           {memberTooltip && displayMembers[memberTooltip.idx] && (
             <div
-              className="fixed z-50 w-[160px] bg-white text-[#1F1F1F] text-xs rounded-lg px-3 py-2 shadow-lg border border-[#E5E5E5] pointer-events-none"
+              className="fixed z-50 w-[160px] bg-[var(--app-elevated)] text-[var(--app-text)] text-xs rounded-lg px-3 py-2 shadow-lg border border-[var(--app-border)] pointer-events-none"
               style={{ top: memberTooltip.top, left: memberTooltip.left }}
             >
               <div className="font-medium">{displayMembers[memberTooltip.idx].name}</div>
@@ -281,7 +281,7 @@ export function ThreadHeader({ leftCollapsed, onToggleLeft }: { leftCollapsed?: 
                   className="w-2 h-2 rounded-full"
                   style={{ backgroundColor: statusColorMap[displayMembers[memberTooltip.idx].status] }}
                 />
-                <span className="text-[#6B6B6B]">{statusLabelMap[displayMembers[memberTooltip.idx].status]}</span>
+                <span className="text-[var(--app-text-secondary)]">{statusLabelMap[displayMembers[memberTooltip.idx].status]}</span>
               </div>
               {displayMembers[memberTooltip.idx].currentTask && (
                 <div className="text-[#9A9A9A] mt-1 truncate">{displayMembers[memberTooltip.idx].currentTask}</div>

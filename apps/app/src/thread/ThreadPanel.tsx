@@ -273,11 +273,11 @@ export function ThreadPanel(props: { leftCollapsed?: boolean; onToggleLeft?: () 
   }, []);
 
   return (
-    <div className="flex h-full flex-col bg-white">
+    <div className="flex h-full flex-col app-panel-main">
       <ThreadHeader leftCollapsed={props.leftCollapsed} onToggleLeft={props.onToggleLeft} />
 
       {isLeadMainView && activeSessionId && (
-        <div className="shrink-0 border-b border-[#F0EBFF] bg-white px-4 pt-3 pb-2">
+        <div className="shrink-0 app-border-b bg-[var(--app-bg)] px-4 pt-3 pb-2">
           <DelegationParallelBanner leadSessionId={activeSessionId} />
         </div>
       )}
@@ -299,12 +299,12 @@ export function ThreadPanel(props: { leftCollapsed?: boolean; onToggleLeft?: () 
                 <div className="w-12 h-12 rounded-2xl bg-[#F0EBFF] flex items-center justify-center mb-4">
                   <Sparkles size={24} className="text-[#7C3AED]" />
                 </div>
-                <h1 className="text-2xl font-semibold text-[#1F1F1F] mb-2 text-center">
+                <h1 className="text-2xl font-semibold text-[var(--app-text)] mb-2 text-center">
                   {currentProject.name
                     ? `我们能在 ${currentProject.name} 中做什么？`
                     : '开始一段新对话'}
                 </h1>
-                <p className="text-sm text-[#6B6B6B] text-center">
+                <p className="text-sm text-[var(--app-text-secondary)] text-center">
                   在下方输入框中描述你的问题，AI 将为你解答
                 </p>
               </div>

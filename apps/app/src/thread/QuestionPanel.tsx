@@ -10,9 +10,6 @@ interface QuestionPanelProps {
 }
 
 const ACCENT = '#2B8FFF';
-const BORDER = '#E5E5E5';
-const TEXT_PRIMARY = '#1F1F1F';
-const TEXT_SECONDARY = '#666';
 
 export function QuestionPanel({ question, onAnswer, onClose }: QuestionPanelProps) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -76,17 +73,17 @@ export function QuestionPanel({ question, onAnswer, onClose }: QuestionPanelProp
   const canProceed = selected.size > 0 || customValue.trim();
 
   return (
-    <div className="border-b border-[#E5E5E5] bg-transparent">
+    <div className="app-border-b bg-transparent">
       <div className="px-4 py-2">
         <div className="max-w-3xl mx-auto">
-          <div className="rounded-xl border border-[#E5E5E5] bg-white overflow-hidden">
+          <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-elevated)] overflow-hidden">
             <div className="px-4 py-2.5">
               <div className="flex items-start gap-2.5">
                 <div className="flex size-7 items-center justify-center rounded-full bg-[#2B8FFF]/20 text-[#2B8FFF] shrink-0 mt-0.5">
                   <HelpCircle size={16} />
                 </div>
                 <div className="min-w-0">
-                  <div className="text-[13px] font-medium leading-5 text-[#1F1F1F]">
+                  <div className="text-[13px] font-medium leading-5 text-[var(--app-text)]">
                     {question.title}
                   </div>
                   {progressText && (
@@ -114,8 +111,8 @@ export function QuestionPanel({ question, onAnswer, onClose }: QuestionPanelProp
                       type="button"
                       className={`w-full text-left px-3 py-2 rounded-lg border text-[13px] transition-all duration-200 flex items-center justify-between
                         ${isSelected
-                          ? 'bg-[#2B8FFF]/10 border-[#2B8FFF]/30 text-[#1F1F1F]'
-                          : 'bg-[#F9F9F9] border-[#E5E5E5] hover:border-[#CCC] hover:bg-[#F0F0F0] text-[#666] hover:text-[#1F1F1F]'
+                          ? 'bg-[#2B8FFF]/10 border-[#2B8FFF]/30 text-[var(--app-text)]'
+                          : 'bg-[var(--app-bg-tertiary)] border-[var(--app-border)] hover:border-[var(--app-border-subtle)] hover:bg-[var(--app-hover)] text-[var(--app-text-secondary)] hover:text-[var(--app-text)]'
                         }
                       `}
                       onClick={() => handleOptionClick(option.label)}
@@ -123,7 +120,7 @@ export function QuestionPanel({ question, onAnswer, onClose }: QuestionPanelProp
                       <span className="min-w-0">
                         <span className="font-medium truncate block">{option.label}</span>
                         {option.description ? (
-                          <span className="text-[11px] text-[#9A9A9A] font-mono truncate block mt-0.5">
+                          <span className="text-[11px] text-[var(--app-text-muted)] font-mono truncate block mt-0.5">
                             {option.description}
                           </span>
                         ) : null}
@@ -139,8 +136,8 @@ export function QuestionPanel({ question, onAnswer, onClose }: QuestionPanelProp
               </div>
 
               {question.allowCustom && (
-                <div className="pt-2 mt-2" style={{ borderTop: `1px solid ${BORDER}` }}>
-                  <label className="block text-[10px] font-semibold uppercase tracking-[0.16em] mb-1.5" style={{ color: TEXT_SECONDARY }}>
+                <div className="pt-2 mt-2 border-t border-[var(--app-border)]">
+                  <label className="block text-[10px] font-semibold uppercase tracking-[0.16em] mb-1.5 text-[var(--app-text-secondary)]">
                     自定义回答
                   </label>
                   <input
@@ -149,8 +146,7 @@ export function QuestionPanel({ question, onAnswer, onClose }: QuestionPanelProp
                     onChange={(e) => setCustomValue(e.target.value)}
                     onKeyDown={handleInputKeyDown}
                     placeholder="请输入..."
-                    className="w-full px-3 py-1.5 rounded-lg bg-[#F9F9F9] border border-[#E5E5E5] text-[13px] outline-none transition-colors focus:border-[#2B8FFF] focus:bg-white"
-                    style={{ color: TEXT_PRIMARY }}
+                    className="w-full px-3 py-1.5 rounded-lg bg-[var(--app-bg-tertiary)] border border-[var(--app-border)] text-[13px] text-[var(--app-text)] outline-none transition-colors focus:border-[#2B8FFF] focus:bg-[var(--app-elevated)]"
                   />
                 </div>
               )}
@@ -168,7 +164,7 @@ export function QuestionPanel({ question, onAnswer, onClose }: QuestionPanelProp
                   </button>
                   <button
                     type="button"
-                    className="px-3 py-1.5 text-xs font-medium rounded-md border border-[#E5E5E5] bg-white text-[#666] hover:bg-[#F5F5F5] transition-colors"
+                    className="px-3 py-1.5 text-xs font-medium rounded-md border border-[var(--app-border)] bg-[var(--app-elevated)] text-[var(--app-text-secondary)] hover:bg-[var(--app-hover)] transition-colors"
                     onClick={onClose}
                   >
                     取消

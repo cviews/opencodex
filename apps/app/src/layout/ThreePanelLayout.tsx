@@ -54,10 +54,10 @@ export function ThreePanelLayout({ children, onSettingsClick }: { children?: Rea
   const toggleRight = () => setPanelState((s) => ({ ...s, rightCollapsed: !s.rightCollapsed }));
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-white text-[#1F1F1F]">
+    <div className="flex h-screen w-screen overflow-hidden app-shell">
       {/* Left sidebar */}
       <div
-        className="transition-[width] duration-150 ease-in-out overflow-hidden border-r border-[#E5E5E5]"
+        className="transition-[width] duration-150 ease-in-out overflow-hidden app-border-r"
         style={{
           width: panelState.leftCollapsed ? 0 : panelState.leftWidth,
           pointerEvents: panelState.leftCollapsed ? 'none' : undefined,
@@ -89,7 +89,7 @@ export function ThreePanelLayout({ children, onSettingsClick }: { children?: Rea
             <PanelActionsMenu />
             <button
               onClick={toggleRight}
-              className="p-1.5 rounded-md text-[#9A9A9A] hover:text-[#1F1F1F] hover:bg-[#F0F0F0] transition-colors"
+              className="p-1.5 rounded-md text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-hover)] transition-colors"
             >
               <PanelRightOpen size={16} />
             </button>
@@ -110,7 +110,7 @@ export function ThreePanelLayout({ children, onSettingsClick }: { children?: Rea
 
       {/* Right panel */}
       <div
-        className="transition-[width] duration-150 ease-in-out overflow-hidden border-l border-[#E5E5E5]"
+        className="transition-[width] duration-150 ease-in-out overflow-hidden app-border-l"
         style={{ width: panelState.rightCollapsed ? 0 : panelState.rightWidth }}
       >
         {!panelState.rightCollapsed && (

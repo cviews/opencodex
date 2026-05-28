@@ -14,11 +14,11 @@ body,
 }
 
 html {
-  background-color: #F5F5F5;
+  background-color: var(--app-bg, #FFFFFF);
 }
 
 html.dark {
-  background-color: #1A1A1A;
+  background-color: var(--app-bg, #1E1E1E);
 }
 
 body {
@@ -51,6 +51,171 @@ body {
   --color-text-primary-dark: #E5E5E5;
   --color-text-secondary-dark: #9A9A9A;
   --color-border-dark: #444444;
+}
+
+/* ─── App shell tokens (Cursor-style) ─── */
+:root {
+  --app-bg: #FFFFFF;
+  --app-bg-secondary: #F3F3F3;
+  --app-bg-tertiary: #FAFAFA;
+  --app-border: #E5E5E5;
+  --app-border-subtle: #E8E8E8;
+  --app-text: #1F1F1F;
+  --app-text-secondary: #6B6B6B;
+  --app-text-muted: #9A9A9A;
+  --app-hover: #F0F0F0;
+  --app-active: #E8E8E8;
+  --app-elevated: #FFFFFF;
+  --app-composer-bg: #FFFFFF;
+  --app-composer-border: #E5E5E5;
+  --app-nav-active: rgba(0, 0, 0, 0.06);
+  --app-nav-hover: rgba(0, 0, 0, 0.04);
+  --app-scrollbar-thumb: rgba(121, 121, 121, 0.45);
+}
+
+.dark {
+  --app-bg: #1E1E1E;
+  --app-bg-secondary: #252526;
+  --app-bg-tertiary: #2A2A2A;
+  --app-border: #3A3A3A;
+  --app-border-subtle: #333333;
+  --app-text: #CCCCCC;
+  --app-text-secondary: #9EA1AA;
+  --app-text-muted: #858585;
+  --app-hover: #2A2D2E;
+  --app-active: #37373D;
+  --app-elevated: #252526;
+  --app-composer-bg: #252526;
+  --app-composer-border: #3A3A3A;
+  --app-nav-active: rgba(255, 255, 255, 0.08);
+  --app-nav-hover: rgba(255, 255, 255, 0.05);
+  --app-scrollbar-thumb: rgba(170, 170, 170, 0.35);
+}
+
+.app-shell {
+  background-color: var(--app-bg);
+  color: var(--app-text);
+}
+
+.app-panel-sidebar {
+  background-color: var(--app-bg-secondary);
+  border-color: var(--app-border-subtle);
+}
+
+.app-panel-main {
+  background-color: var(--app-bg);
+}
+
+.app-panel-secondary {
+  background-color: var(--app-bg-secondary);
+}
+
+.app-border-b {
+  border-bottom: 1px solid var(--app-border);
+}
+
+.app-border-r {
+  border-right: 1px solid var(--app-border-subtle);
+}
+
+.app-border-l {
+  border-left: 1px solid var(--app-border-subtle);
+}
+
+.app-composer {
+  background-color: var(--app-composer-bg);
+  border: 1px solid var(--app-composer-border);
+  border-radius: 0.75rem 0.75rem 0 0;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.dark .app-composer {
+  box-shadow: none;
+}
+
+.app-settings-shell {
+  background-color: var(--app-bg);
+}
+
+.app-settings-nav {
+  background-color: var(--app-bg-secondary);
+  border-color: var(--app-border-subtle);
+}
+
+.app-settings-nav-item {
+  color: var(--app-text-secondary);
+}
+
+.app-settings-nav-item:hover {
+  color: var(--app-text);
+  background-color: var(--app-nav-hover);
+}
+
+.app-settings-nav-item--active {
+  color: var(--app-text);
+  background-color: var(--app-nav-active);
+}
+
+.app-settings-content {
+  background-color: var(--app-bg);
+}
+
+.settings-card {
+  border: 1px solid var(--app-border);
+  border-radius: 0.5rem;
+  background-color: var(--app-elevated);
+  overflow: hidden;
+}
+
+.settings-card > * + * {
+  border-top: 1px solid var(--app-border);
+}
+
+.settings-input {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  color: var(--app-text);
+  background-color: var(--app-elevated);
+  border: 1px solid var(--app-border);
+  border-radius: 0.375rem;
+}
+
+.settings-input::placeholder {
+  color: var(--app-text-muted);
+}
+
+.settings-input:focus {
+  outline: none;
+  border-color: #2B8FFF;
+}
+
+.settings-button {
+  padding: 0.375rem 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  color: var(--app-text);
+  background-color: transparent;
+  border: 1px solid var(--app-border);
+  border-radius: 0.375rem;
+  transition: background-color 150ms ease;
+}
+
+.settings-button:hover {
+  background-color: var(--app-hover);
+}
+
+.app-section-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--app-text-muted);
+}
+
+.app-section-title:hover {
+  color: var(--app-text);
 }
 
 @keyframes slide-in-right {
@@ -458,6 +623,90 @@ body {
   word-break: break-word;
 }
 
+/* Cursor-style overlay scrollbar (unified across app) */
+.cursor-scrollbar,
+.scrollbar-hover,
+.scrollbar-sidebar {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.cursor-scrollbar:hover,
+.scrollbar-hover:hover,
+.scrollbar-sidebar:hover {
+  scrollbar-color: var(--app-scrollbar-thumb) transparent;
+}
+
+.cursor-scrollbar::-webkit-scrollbar,
+.scrollbar-hover::-webkit-scrollbar,
+.scrollbar-sidebar::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.cursor-scrollbar::-webkit-scrollbar-track,
+.scrollbar-hover::-webkit-scrollbar-track,
+.scrollbar-sidebar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.cursor-scrollbar::-webkit-scrollbar-thumb,
+.scrollbar-hover::-webkit-scrollbar-thumb,
+.scrollbar-sidebar::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 9999px;
+}
+
+.cursor-scrollbar:hover::-webkit-scrollbar-thumb,
+.scrollbar-hover:hover::-webkit-scrollbar-thumb,
+.scrollbar-sidebar:hover::-webkit-scrollbar-thumb {
+  background-color: var(--app-scrollbar-thumb);
+}
+
+/* Apply Cursor scrollbars to scrollable regions app-wide */
+.overflow-y-auto:not(.no-app-scrollbar):not(.message-draft-preview-inner),
+.overflow-x-auto:not(.no-app-scrollbar):not(.message-draft-preview-inner) {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.overflow-y-auto:not(.no-app-scrollbar):not(.message-draft-preview-inner):hover,
+.overflow-x-auto:not(.no-app-scrollbar):not(.message-draft-preview-inner):hover {
+  scrollbar-color: var(--app-scrollbar-thumb) transparent;
+}
+
+.overflow-y-auto:not(.no-app-scrollbar):not(.message-draft-preview-inner)::-webkit-scrollbar,
+.overflow-x-auto:not(.no-app-scrollbar):not(.message-draft-preview-inner)::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.overflow-y-auto:not(.no-app-scrollbar):not(.message-draft-preview-inner)::-webkit-scrollbar-track,
+.overflow-x-auto:not(.no-app-scrollbar):not(.message-draft-preview-inner)::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.overflow-y-auto:not(.no-app-scrollbar):not(.message-draft-preview-inner)::-webkit-scrollbar-thumb,
+.overflow-x-auto:not(.no-app-scrollbar):not(.message-draft-preview-inner)::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 9999px;
+}
+
+.overflow-y-auto:not(.no-app-scrollbar):not(.message-draft-preview-inner):hover::-webkit-scrollbar-thumb,
+.overflow-x-auto:not(.no-app-scrollbar):not(.message-draft-preview-inner):hover::-webkit-scrollbar-thumb {
+  background-color: var(--app-scrollbar-thumb);
+}
+
+.embedded-terminal .overflow-y-auto::-webkit-scrollbar,
+.embedded-terminal .overflow-x-auto::-webkit-scrollbar,
+.embedded-terminal .xterm-viewport::-webkit-scrollbar {
+  display: none;
+}
+
 .activity-step-compaction-stream--running {
   border-left: 2px solid var(--color-msg-border);
   padding-left: 8px;
@@ -520,40 +769,14 @@ body {
   color: #991b1b;
 }
 
-/* Scrollbar visible only while hovering the scroll area */
-.scrollbar-hover {
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
+
+.embedded-terminal .xterm-viewport {
+  background-color: transparent !important;
+  scrollbar-width: none;
 }
 
-.scrollbar-hover:hover {
-  scrollbar-color: rgba(0, 0, 0, 0.28) transparent;
-}
-
-.scrollbar-hover::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-.scrollbar-hover::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.scrollbar-hover::-webkit-scrollbar-thumb {
-  background-color: transparent;
-  border-radius: 9999px;
-}
-
-.scrollbar-hover:hover::-webkit-scrollbar-thumb {
-  background-color: rgba(0, 0, 0, 0.28);
-}
-
-.dark .scrollbar-hover:hover {
-  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
-}
-
-.dark .scrollbar-hover:hover::-webkit-scrollbar-thumb {
-  background-color: rgba(255, 255, 255, 0.28);
+.embedded-terminal .xterm-viewport::-webkit-scrollbar {
+  display: none;
 }
 
 .embedded-terminal .xterm {
@@ -562,10 +785,6 @@ body {
   padding: 0;
   user-select: text !important;
   -webkit-user-select: text !important;
-}
-
-.embedded-terminal .xterm-viewport {
-  background-color: transparent !important;
 }
 
 .embedded-terminal .xterm-screen {

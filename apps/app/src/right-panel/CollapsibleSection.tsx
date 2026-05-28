@@ -13,7 +13,7 @@ export function CollapsibleSection({ title, collapsed, onToggle, children }: Col
     <div>
       <button
         onClick={onToggle}
-        className="flex items-center gap-1 w-full text-xs font-semibold uppercase tracking-wider text-[#9A9A9A] hover:text-[#1F1F1F] py-1 transition-colors"
+        className="flex items-center gap-1 w-full app-section-title py-1 transition-colors"
       >
         {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
         <span>{title}</span>

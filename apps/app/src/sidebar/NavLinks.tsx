@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { t } from '../constants/i18n';
@@ -400,33 +400,13 @@ export function ProjectSection() {
   const stableCancelRename = useCallback(cancelRename, [renameSessionId]);
   useEscapeKey(stableCancelRename, !!renameSessionId);
 
-  const projectScrollRef = useRef<HTMLDivElement>(null);
-  const [sessionListMaxHeight, setSessionListMaxHeight] = useState(140);
-
-  useLayoutEffect(() => {
-    const node = projectScrollRef.current;
-    if (!node) return;
-
-    const update = () => {
-      const projectCount = Math.max(projects.length, 1);
-      const perProject = Math.floor(node.clientHeight / projectCount);
-      const next = Math.max(136, Math.min(220, perProject - 36));
-      setSessionListMaxHeight(next);
-    };
-
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [projects.length]);
-
   return (
     <div className="flex min-h-0 flex-1 flex-col px-2 py-2">
-      <div className="mb-2 px-2 text-[11px] font-medium uppercase tracking-wider text-[#8A8A8A] dark:text-[#727272]">
+      <div className="mb-2 shrink-0 px-2 text-[11px] font-medium uppercase tracking-wider text-[#8A8A8A] dark:text-[#727272]">
         项目
       </div>
 
-      <div ref={projectScrollRef} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+      <div className="scrollbar-sidebar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overflow-x-hidden">
         {projects.map((p) => {
           const isCurrent = currentProject.id === p.id;
           const isSwitching = switchingProjectId === p.id || (isCurrent && reconnecting);
@@ -443,7 +423,7 @@ export function ProjectSection() {
           );
 
           return (
-            <div key={p.id} className="relative group flex min-h-0 flex-col">
+            <div key={p.id} className="relative group flex shrink-0 flex-col">
               <div className="flex items-center rounded-md">
                 <button
                   onClick={() => {
@@ -505,7 +485,7 @@ export function ProjectSection() {
                 </div>
               )}
 
-              <div className="ml-3 flex min-h-0 flex-col border-l border-[#E8E8E8] pl-1 dark:border-[#3A3A3A]">
+              <div className="ml-3 flex shrink-0 flex-col border-l border-[#E8E8E8] pl-1 dark:border-[#3A3A3A]">
                 <ProjectSessionsList
                   sessions={projectSessions}
                   activeSessionId={projectActiveSessionId}
@@ -516,7 +496,6 @@ export function ProjectSection() {
                   onSessionClick={(sessionId) => handleSessionClick(p, sessionId)}
                   onSessionContextMenu={handleContextMenu}
                   formatTime={formatTime}
-                  listMaxHeight={sessionListMaxHeight}
                 />
 
                 {isCurrent && projectActiveSessionId && (() => {

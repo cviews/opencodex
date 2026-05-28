@@ -10,7 +10,6 @@ import { resolveSidebarSessionRunStatus } from '../utils/sidebarSessionStatus';
 const SESSION_ROW_HEIGHT = 28;
 const SEE_MORE_ROW_HEIGHT = 24;
 const DEFAULT_COLLAPSED_ROWS = 4;
-const DEFAULT_LIST_MAX_HEIGHT = DEFAULT_COLLAPSED_ROWS * SESSION_ROW_HEIGHT + SEE_MORE_ROW_HEIGHT;
 const STATUS_ICON_BOX = 'flex h-[13px] w-[13px] shrink-0 items-center justify-center';
 
 function SessionRunStatusIcon({
@@ -65,7 +64,6 @@ export function ProjectSessionsList({
   onSessionClick,
   onSessionContextMenu,
   formatTime,
-  listMaxHeight = DEFAULT_LIST_MAX_HEIGHT,
 }: {
   sessions: Session[];
   activeSessionId: string | null;
@@ -76,7 +74,6 @@ export function ProjectSessionsList({
   onSessionClick: (sessionId: string) => void;
   onSessionContextMenu: (event: React.MouseEvent, sessionId: string) => void;
   formatTime: (dateStr: string) => string;
-  listMaxHeight?: number;
 }) {
   const language = useSettingsStore((s) => s.language);
   const i18nLang = language === 'zh-CN' ? 'zh' : 'en';
@@ -101,14 +98,10 @@ export function ProjectSessionsList({
   const collapsedClipHeight = collapsedVisibleRows * SESSION_ROW_HEIGHT;
 
   return (
-    <div className="flex min-h-0 flex-col">
+    <div className="flex flex-col">
       <div
-        className={expanded ? 'overflow-y-auto' : 'overflow-hidden'}
-        style={
-          expanded
-            ? { maxHeight: listMaxHeight }
-            : { maxHeight: collapsedClipHeight }
-        }
+        className="overflow-hidden"
+        style={{ maxHeight: expanded ? undefined : collapsedClipHeight }}
       >
         <div className="flex flex-col">
           {visibleSessions.map((session) => {

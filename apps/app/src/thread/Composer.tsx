@@ -664,7 +664,7 @@ export function Composer({
       <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) processSelectedFiles(e.target.files); e.target.value = ''; }} />
       <div className="max-w-3xl mx-auto">
         <LexicalComposer initialConfig={initialConfig}>
-          <div ref={composerDropRef} className="border border-[#E5E5E5] bg-white rounded-t-xl p-4 shadow-sm" onDrop={handleDrop} onDragOver={handleDragOver}>
+          <div ref={composerDropRef} className="app-composer p-4" onDrop={handleDrop} onDragOver={handleDragOver}>
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-2 mb-3">
                 {attachments.map((att) => (
@@ -698,7 +698,7 @@ export function Composer({
             )}
             <div className="relative min-h-[48px]" ref={editorAreaRef}>
               <RichTextPlugin
-                contentEditable={<ContentEditable className="w-full resize-none bg-transparent text-sm text-[#1F1F1F] focus:outline-none min-h-[48px] max-h-[200px] overflow-y-auto" />}
+                contentEditable={<ContentEditable className="w-full resize-none bg-transparent text-sm text-[var(--app-text)] focus:outline-none min-h-[48px] max-h-[200px] overflow-y-auto" />}
                 placeholder={<Placeholder />}
                 ErrorBoundary={({ children }) => <>{children}</>}
               />

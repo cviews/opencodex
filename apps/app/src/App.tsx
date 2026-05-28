@@ -62,7 +62,7 @@ export default function App() {
 
 function StartupPage() {
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#F5F5F5] dark:bg-[#1A1A1A]">
+    <div className="flex h-screen w-screen overflow-hidden app-shell">
       <NewChatPage standalone />
     </div>
   );

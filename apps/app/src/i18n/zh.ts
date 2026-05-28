@@ -28,6 +28,8 @@ export const zh: Record<string, string> = {
   'sidebar.recentChats': '\u5bf9\u8bdd',
   'sidebar.newChatButton': '\u65b0\u5bf9\u8bdd',
   'sidebar.projectBadge': '\u9879\u76ee',
+  'sidebar.seeMore': '\u67e5\u770b\u66f4\u591a ({count})',
+  'sidebar.noChats': '\u6682\u65e0\u804a\u5929',
 
   // Context menu
   'context.rename': '\u91cd\u547d\u540d',

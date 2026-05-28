@@ -27,6 +27,7 @@ function statusFromSessionRun(
 ): TeamMemberStatus | undefined {
   if (sessionRun === 'running') return 'working';
   if (sessionRun === 'error') return 'error';
+  if (sessionRun === 'idle') return 'idle';
   return undefined;
 }
 
@@ -34,8 +35,14 @@ function mergeMemberDisplayStatus(
   baseStatus: TeamMemberStatus,
   sessionRun: 'idle' | 'running' | 'error' | undefined,
 ): TeamMemberStatus {
-  const fromRun = statusFromSessionRun(sessionRun);
-  if (fromRun) return fromRun;
+  if (sessionRun === 'running') return 'working';
+  if (sessionRun === 'error') return 'error';
+  if (sessionRun === 'idle') {
+    if (baseStatus === 'completed' || baseStatus === 'waiting' || baseStatus === 'error') {
+      return baseStatus;
+    }
+    return 'idle';
+  }
   return baseStatus;
 }
 
@@ -147,6 +154,7 @@ export function resolveTeamMembersForDisplay(
   team: TeamInfo,
   subAgents: SubAgentItem[],
   parentSessionId?: string,
+  sessionRunStatus?: Record<string, 'idle' | 'running' | 'error'>,
 ): TeamInfo['members'] {
   const leadSessionId = parentSessionId ?? team.sessionId;
   const children = scopedSubAgents(subAgents, leadSessionId);
@@ -178,13 +186,8 @@ export function resolveTeamMembersForDisplay(
     sessionID: leadFromApi?.sessionID || leadSessionId,
     role: 'lead',
   };
-  const runStatus = useSessionStore.getState().sessionRunStatus;
-  const leadRun = runStatus[leadSessionId];
-  if (leadRun === 'idle') {
-    lead.status = 'idle';
-  } else if (leadRun === 'running') {
-    lead.status = 'working';
-  }
+  const runStatus = sessionRunStatus ?? useSessionStore.getState().sessionRunStatus;
+  lead.status = mergeMemberDisplayStatus(lead.status, runStatus[leadSessionId]);
   byKey.set(memberKey(lead), lead);
 
   for (const member of team.members) {

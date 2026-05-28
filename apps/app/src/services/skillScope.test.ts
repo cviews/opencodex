@@ -27,10 +27,10 @@ describe('classifySkillScope', () => {
     ).toBe('project');
   });
 
-  it('marks ~/.opencode skills as global', () => {
+  it('marks ~/.config/opencode/skills as global', () => {
     expect(
       classifySkillScope(
-        '/Users/dev/.opencode/skills/zmn-design-system/SKILL.md',
+        '/Users/dev/.config/opencode/skills/zmn-design-system/SKILL.md',
         ctx,
       ),
     ).toBe('global');
@@ -74,7 +74,7 @@ describe('buildSlashCatalog', () => {
     {
       name: 'zmn-design-system',
       description: 'Design system',
-      location: '/Users/dev/.opencode/skills/zmn-design-system/SKILL.md',
+      location: '/Users/dev/.config/opencode/skills/zmn-design-system/SKILL.md',
     },
   ];
 
@@ -107,7 +107,7 @@ describe('buildSlashCatalog', () => {
       {
         name: 'zmn-app-result',
         description: 'AppResult spec',
-        location: '/Users/dev/.opencode/skills/zmn-app-result/SKILL.md',
+        location: '/Users/dev/.config/opencode/skills/zmn-app-result/SKILL.md',
         content: '# ZMN AppResult / HTTP 规范\n\nBody',
       },
     ];
@@ -135,7 +135,7 @@ describe('buildSlashCatalog', () => {
     const skill = {
       name: 'zmn-app-result',
       description: 'AppResult spec',
-      location: '/Users/dev/.opencode/skills/zmn-app-result/SKILL.md',
+      location: '/Users/dev/.config/opencode/skills/zmn-app-result/SKILL.md',
       content: '# ZMN AppResult / HTTP 规范\n\nBody content here',
     };
     expect(

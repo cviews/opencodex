@@ -4,6 +4,7 @@ import { startRouter } from './eventRouter';
 import { setEventInstanceDirectory } from './eventDirectory';
 import { useProjectStore } from '../stores/project';
 import { invalidateOpenCodeServerUrlCache } from '../services/serverUrlCache';
+import { resetTerminalPtyBindings } from '../stores/terminal';
 import { opencodePermission, opencodeSlash } from '../services/opencodeAdapter';
 import { debugError, debugLog, debugWarn } from '../utils/debugLog';
 
@@ -105,7 +106,12 @@ export function SDKProvider({ children, initialUrl }: { children: ReactNode; ini
   }, []);
 
   const updateServerUrl = useCallback((url: string) => {
-    setServerUrl(url);
+    setServerUrl((prev) => {
+      if (prev && prev !== url) {
+        resetTerminalPtyBindings();
+      }
+      return url;
+    });
   }, []);
 
   const restartWithDir = useCallback(async (directory: string): Promise<RestartWithDirResult> => {
@@ -137,7 +143,13 @@ export function SDKProvider({ children, initialUrl }: { children: ReactNode; ini
             setConnected(true);
           }
         } else {
-          setServerUrl(result.url);
+          const nextUrl = result.url;
+          setServerUrl((prev) => {
+            if (prev && prev !== nextUrl) {
+              resetTerminalPtyBindings();
+            }
+            return nextUrl;
+          });
         }
         setReconnecting(false);
         return { url: result.url };

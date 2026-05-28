@@ -2,15 +2,29 @@ import { create } from 'zustand';
 import type { Session } from '@opencodex/types';
 import type { SubAgentItem } from '../types';
 import { opencodeSession } from '../services/opencodeAdapter';
-import { on, EventType, extractEventPayload } from '../sdk/eventRouter';
+import { on, EventType, extractEventPayload, registerCrossProjectEventHandler } from '../sdk/eventRouter';
+import { normalizeDirectoryPath } from '../sdk/eventDirectory';
 import { useProjectStore } from './project';
 import { useTeamStore } from './team';
 import { isTopLevelSession, dedupeSessionsById } from '../utils/sessionHierarchy';
+import { resyncRunningProjectSessions } from '../services/projectSessionResync';
+import { syncSessionRunStatusToMessageStore } from '../services/sessionRunStatusSync';
+import { syncTeamMemberStatusFromRunStatus } from '../services/teamMemberRunStatusSync';
 
 export type SubAgent = SubAgentItem;
 export type SessionRunStatus = 'idle' | 'running' | 'error';
 
+interface ProjectSessionSnapshot {
+  sessions: Session[];
+  activeSessionId: string | null;
+  selectedSubAgentId: string | null;
+  sessionRunStatus: Record<string, SessionRunStatus>;
+  subAgents: SubAgent[];
+}
+
 interface SessionState {
+  currentProjectPath: string;
+  byProject: Record<string, ProjectSessionSnapshot>;
   sessions: Session[];
   subAgents: SubAgent[];
   activeSessionId: string | null;
@@ -28,14 +42,169 @@ interface SessionState {
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
   setSelectedSubAgentId: (id: string | null) => void;
+  switchProjectScope: (projectPath: string) => void;
+  refreshProjectScopeFromServer: (projectPath: string) => Promise<void>;
+  refreshProjectRunStatus: (projectPath: string) => Promise<void>;
+  applyCrossProjectSessionEvent: (
+    eventDirectory: string,
+    event: Record<string, unknown>,
+  ) => void;
+  prefetchProjectSessions: (projectPath: string) => Promise<void>;
   fetchSessions: () => Promise<void>;
   fetchSubAgents: (parentSessionId?: string) => Promise<void>;
   subscribeToEvents: () => () => void;
 }
 
+function emptySessionSnapshot(): ProjectSessionSnapshot {
+  return {
+    sessions: [],
+    activeSessionId: null,
+    selectedSubAgentId: null,
+    sessionRunStatus: {},
+    subAgents: [],
+  };
+}
+
+function snapshotFromSessionState(
+  state: Pick<
+    SessionState,
+    'sessions' | 'activeSessionId' | 'selectedSubAgentId' | 'sessionRunStatus' | 'subAgents'
+  >,
+): ProjectSessionSnapshot {
+  return {
+    sessions: state.sessions,
+    activeSessionId: state.activeSessionId,
+    selectedSubAgentId: state.selectedSubAgentId,
+    sessionRunStatus: state.sessionRunStatus,
+    subAgents: state.subAgents,
+  };
+}
+
+function resolveCurrentProjectPath(state: SessionState): string {
+  const fromStore = state.currentProjectPath.trim();
+  if (fromStore) return fromStore;
+  return useProjectStore.getState().currentProject.path?.trim() ?? '';
+}
+
+function persistProjectSnapshot(
+  byProject: Record<string, ProjectSessionSnapshot>,
+  projectPath: string,
+  snapshot: ProjectSessionSnapshot,
+): Record<string, ProjectSessionSnapshot> {
+  const path = projectPath.trim();
+  if (!path) return byProject;
+  return { ...byProject, [path]: snapshot };
+}
+
+function resolveProjectSnapshotKey(
+  byProject: Record<string, ProjectSessionSnapshot>,
+  directory: string,
+): string {
+  const normalized = normalizeDirectoryPath(directory);
+  if (byProject[normalized]) return normalized;
+  for (const key of Object.keys(byProject)) {
+    if (normalizeDirectoryPath(key) === normalized) return key;
+  }
+  for (const project of useProjectStore.getState().projects) {
+    const path = project.path.trim();
+    if (path && normalizeDirectoryPath(path) === normalized) return path;
+  }
+  return directory.trim();
+}
+
+function mergeSessionRunStatus(
+  cached: Record<string, SessionRunStatus>,
+  server: Record<string, SessionRunStatus>,
+  trustServerIdle = false,
+): Record<string, SessionRunStatus> {
+  const merged = { ...cached, ...server };
+  if (trustServerIdle) return merged;
+  for (const [sessionId, cachedStatus] of Object.entries(cached)) {
+    if (cachedStatus === 'running' && merged[sessionId] === 'idle') {
+      merged[sessionId] = 'running';
+    }
+  }
+  return merged;
+}
+
+function parseSessionRunStatusFromEvent(
+  event: Record<string, unknown>,
+): { sessionId: string; status: SessionRunStatus } | null {
+  const props = extractEventPayload(event);
+  const sessionId = String(props.sessionID ?? props.sessionId ?? '').trim();
+  if (!sessionId) return null;
+
+  const eventType = typeof event.type === 'string' ? event.type : '';
+  if (eventType === 'session.idle') {
+    return { sessionId, status: 'idle' };
+  }
+  if (eventType === 'session.error') {
+    return { sessionId, status: 'error' };
+  }
+
+  const status = props.status as { type?: string } | undefined;
+  if (status?.type === 'busy' || status?.type === 'retry') {
+    return { sessionId, status: 'running' };
+  }
+  if (status?.type === 'idle') {
+    return { sessionId, status: 'idle' };
+  }
+  return null;
+}
+
+function applyRunStatusToProjectSnapshot(
+  state: SessionState,
+  projectPath: string,
+  sessionId: string,
+  status: SessionRunStatus,
+): Partial<SessionState> {
+  const path = resolveProjectSnapshotKey(state.byProject, projectPath);
+  const previous = state.byProject[path] ?? emptySessionSnapshot();
+  const sessionRunStatus = { ...previous.sessionRunStatus, [sessionId]: status };
+  const byProject = persistProjectSnapshot(state.byProject, path, {
+    ...previous,
+    sessionRunStatus,
+  });
+  const isCurrent = resolveCurrentProjectPath(state) === path
+    || normalizeDirectoryPath(resolveCurrentProjectPath(state)) === normalizeDirectoryPath(path);
+
+  if (!isCurrent) return { byProject };
+  return {
+    byProject,
+    sessionRunStatus: { ...state.sessionRunStatus, [sessionId]: status },
+  };
+}
+
+function resolveSubAgentParentSessionId(
+  state: Pick<SessionState, 'subAgents' | 'sessions'>,
+  sessionID: string,
+): string | undefined {
+  const fromSubAgent = state.subAgents.find((agent) => agent.sessionId === sessionID);
+  if (fromSubAgent?.parentSessionId) return fromSubAgent.parentSessionId;
+  const fromSession = state.sessions.find((session) => session.id === sessionID);
+  const parentID = fromSession?.parentID?.trim();
+  return parentID || undefined;
+}
+
+function patchSubAgentStatusFromRunStatus(
+  subAgents: SubAgent[],
+  sessionId: string,
+  status: SessionRunStatus,
+): SubAgent[] | undefined {
+  const index = subAgents.findIndex((agent) => agent.sessionId === sessionId);
+  if (index < 0) return undefined;
+  const nextStatus: SubAgent['status'] = status === 'running' ? 'running' : 'completed';
+  if (subAgents[index].status === nextStatus) return undefined;
+  const next = [...subAgents];
+  next[index] = { ...next[index], status: nextStatus };
+  return next;
+}
+
 const initialSessions: Session[] = [];
 
 export const useSessionStore = create<SessionState>((set, get) => ({
+  currentProjectPath: '',
+  byProject: {},
   sessions: initialSessions,
   subAgents: [],
   activeSessionId: null,
@@ -44,46 +213,246 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   loading: false,
   error: null,
 
+  switchProjectScope: (projectPath) => {
+    const nextPath = projectPath.trim();
+    const state = get();
+    const currentPath = resolveCurrentProjectPath(state);
+
+    let byProject = { ...state.byProject };
+    if (currentPath && currentPath !== nextPath) {
+      byProject = persistProjectSnapshot(
+        byProject,
+        currentPath,
+        snapshotFromSessionState(state),
+      );
+    }
+
+    const restored = nextPath ? (byProject[nextPath] ?? emptySessionSnapshot()) : emptySessionSnapshot();
+    if (nextPath && !byProject[nextPath]) {
+      byProject = persistProjectSnapshot(byProject, nextPath, restored);
+    }
+
+    set({
+      currentProjectPath: nextPath,
+      byProject,
+      sessions: restored.sessions,
+      subAgents: restored.subAgents,
+      activeSessionId: restored.activeSessionId,
+      selectedSubAgentId: restored.selectedSubAgentId,
+      sessionRunStatus: restored.sessionRunStatus,
+      loading: false,
+      error: null,
+    });
+  },
+
+  refreshProjectScopeFromServer: async (projectPath) => {
+    const path = projectPath.trim();
+    if (!path) return;
+    try {
+      const [sessions, serverRunStatus] = await Promise.all([
+        opencodeSession.fetchSessions(path),
+        opencodeSession.fetchSessionRunStatus(path),
+      ]);
+      const topLevel = dedupeSessionsById((sessions as Session[]).filter(isTopLevelSession));
+      set((state) => {
+        const snapshotKey = resolveProjectSnapshotKey(state.byProject, path);
+        const previous = state.byProject[snapshotKey] ?? emptySessionSnapshot();
+        const sessionRunStatus = mergeSessionRunStatus(
+          previous.sessionRunStatus,
+          serverRunStatus,
+          true,
+        );
+        const snapshot: ProjectSessionSnapshot = {
+          ...previous,
+          sessions: topLevel,
+          sessionRunStatus,
+        };
+        const byProject = persistProjectSnapshot(state.byProject, snapshotKey, snapshot);
+        const isCurrent =
+          resolveCurrentProjectPath(state) === snapshotKey
+          || normalizeDirectoryPath(resolveCurrentProjectPath(state)) === normalizeDirectoryPath(snapshotKey);
+
+        if (!isCurrent) return { byProject };
+
+        return {
+          byProject,
+          sessions: topLevel,
+          sessionRunStatus,
+          loading: false,
+          error: null,
+        };
+      });
+      await resyncRunningProjectSessions();
+    } catch (e) {
+      console.error('[SessionStore] refreshProjectScopeFromServer failed:', e);
+    }
+  },
+
+  refreshProjectRunStatus: async (projectPath) => {
+    const path = projectPath.trim();
+    if (!path) return;
+    try {
+      const serverRunStatus = await opencodeSession.fetchSessionRunStatus(path);
+      const previousCurrentRunStatus = get().sessionRunStatus;
+      set((state) => {
+        const snapshotKey = resolveProjectSnapshotKey(state.byProject, path);
+        const previous = state.byProject[snapshotKey] ?? emptySessionSnapshot();
+        const sessionRunStatus = mergeSessionRunStatus(
+          previous.sessionRunStatus,
+          serverRunStatus,
+          true,
+        );
+        const byProject = persistProjectSnapshot(state.byProject, snapshotKey, {
+          ...previous,
+          sessionRunStatus,
+        });
+        const isCurrent =
+          resolveCurrentProjectPath(state) === snapshotKey
+          || normalizeDirectoryPath(resolveCurrentProjectPath(state)) === normalizeDirectoryPath(snapshotKey);
+
+        if (!isCurrent) return { byProject };
+
+        return {
+          byProject,
+          sessionRunStatus: mergeSessionRunStatus(state.sessionRunStatus, sessionRunStatus, true),
+        };
+      });
+
+      const isCurrent =
+        resolveCurrentProjectPath(get()) === resolveProjectSnapshotKey(get().byProject, path)
+        || normalizeDirectoryPath(resolveCurrentProjectPath(get()))
+          === normalizeDirectoryPath(resolveProjectSnapshotKey(get().byProject, path));
+      if (isCurrent) {
+        for (const [sessionId, status] of Object.entries(get().sessionRunStatus)) {
+          if (previousCurrentRunStatus[sessionId] !== status) {
+            syncSessionRunStatusToMessageStore(sessionId, status);
+            syncTeamMemberStatusFromRunStatus(sessionId, status);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[SessionStore] refreshProjectRunStatus failed:', e);
+    }
+  },
+
+  applyCrossProjectSessionEvent: (eventDirectory, event) => {
+    const parsed = parseSessionRunStatusFromEvent(event);
+    if (!parsed) return;
+    set((state) =>
+      applyRunStatusToProjectSnapshot(state, eventDirectory, parsed.sessionId, parsed.status),
+    );
+  },
+
   setSessions: (sessions) =>
     set({
       sessions: dedupeSessionsById(sessions),
       loading: false,
       error: null,
     }),
-  setSessionRunStatus: (sessionId, status) =>
-    set((state) => ({
-      sessionRunStatus: { ...state.sessionRunStatus, [sessionId]: status },
-    })),
+  setSessionRunStatus: (sessionId, status) => {
+    set((state) => {
+      const sessionRunStatus = { ...state.sessionRunStatus, [sessionId]: status };
+      const patchedSubAgents = patchSubAgentStatusFromRunStatus(state.subAgents, sessionId, status);
+      const subAgents = patchedSubAgents ?? state.subAgents;
+      const currentPath = resolveCurrentProjectPath(state);
+      if (!currentPath) {
+        return patchedSubAgents ? { sessionRunStatus, subAgents } : { sessionRunStatus };
+      }
+      const previous = state.byProject[currentPath] ?? emptySessionSnapshot();
+      return {
+        sessionRunStatus,
+        subAgents,
+        byProject: persistProjectSnapshot(state.byProject, currentPath, {
+          ...previous,
+          sessionRunStatus,
+          subAgents,
+        }),
+      };
+    });
+    syncSessionRunStatusToMessageStore(sessionId, status);
+    syncTeamMemberStatusFromRunStatus(sessionId, status);
+  },
   setActiveSession: (id) => {
     useTeamStore.getState().setSelectedMemberId(null);
-    set({ activeSessionId: id, selectedSubAgentId: null });
+    set((state) => {
+      const next = { activeSessionId: id, selectedSubAgentId: null };
+      const currentPath = resolveCurrentProjectPath(state);
+      if (!currentPath) return next;
+      const previous = state.byProject[currentPath] ?? emptySessionSnapshot();
+      return {
+        ...next,
+        byProject: persistProjectSnapshot(state.byProject, currentPath, {
+          ...previous,
+          activeSessionId: id,
+          selectedSubAgentId: null,
+        }),
+      };
+    });
   },
   addSession: (session) =>
     set((state) => {
       if (state.sessions.some((s) => s.id === session.id)) return state;
-      return { sessions: [session, ...state.sessions] };
+      const sessions = dedupeSessionsById([session, ...state.sessions]);
+      const currentPath = resolveCurrentProjectPath(state);
+      if (!currentPath) return { sessions };
+      const previous = state.byProject[currentPath] ?? emptySessionSnapshot();
+      return {
+        sessions,
+        byProject: persistProjectSnapshot(state.byProject, currentPath, {
+          ...previous,
+          ...snapshotFromSessionState({ ...state, sessions }),
+        }),
+      };
     }),
   removeSession: (id) =>
     set((state) => {
       const { [id]: _removed, ...sessionRunStatus } = state.sessionRunStatus;
-      return {
-      sessions: state.sessions.filter((s) => s.id !== id),
-      subAgents: state.subAgents.filter((a) => a.parentSessionId !== id && a.id !== id),
-      sessionRunStatus,
-      activeSessionId: state.activeSessionId === id ? null : state.activeSessionId,
-      selectedSubAgentId:
+      const sessions = state.sessions.filter((s) => s.id !== id);
+      const subAgents = state.subAgents.filter((a) => a.parentSessionId !== id && a.id !== id);
+      const activeSessionId = state.activeSessionId === id ? null : state.activeSessionId;
+      const selectedSubAgentId =
         state.selectedSubAgentId === id ||
         state.subAgents.some(
           (a) => a.id === state.selectedSubAgentId && a.parentSessionId === id,
         )
           ? null
-          : state.selectedSubAgentId,
-    };
+          : state.selectedSubAgentId;
+      const next = {
+        sessions,
+        subAgents,
+        sessionRunStatus,
+        activeSessionId,
+        selectedSubAgentId,
+      };
+      const currentPath = resolveCurrentProjectPath(state);
+      if (!currentPath) return next;
+      const previous = state.byProject[currentPath] ?? emptySessionSnapshot();
+      return {
+        ...next,
+        byProject: persistProjectSnapshot(state.byProject, currentPath, {
+          ...previous,
+          sessions,
+          sessionRunStatus,
+          activeSessionId,
+          selectedSubAgentId,
+          subAgents,
+        }),
+      };
     }),
   updateSession: (id, updates) =>
-    set((state) => ({
-      sessions: state.sessions.map((s) => (s.id === id ? { ...s, ...updates } : s)),
-    })),
+    set((state) => {
+      const sessions = state.sessions.map((s) => (s.id === id ? { ...s, ...updates } : s));
+      const currentPath = resolveCurrentProjectPath(state);
+      if (!currentPath) return { sessions };
+      const previous = state.byProject[currentPath] ?? emptySessionSnapshot();
+      return {
+        sessions,
+        byProject: persistProjectSnapshot(state.byProject, currentPath, {
+          ...previous,
+          sessions,
+        }),
+      };
+    }),
   setLoading: (loading) => set({ loading }),
   setError: (error) => set({ error }),
   setSelectedSubAgentId: (id) => set({ selectedSubAgentId: id }),
@@ -92,14 +461,61 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set({ loading: true });
     try {
       const directory = useProjectStore.getState().currentProject.path || undefined;
-      const sessions = await opencodeSession.fetchSessions(directory);
-      set({
-        sessions: dedupeSessionsById((sessions as Session[]).filter(isTopLevelSession)),
-        loading: false,
-        error: null,
+      const [sessions, serverRunStatus] = await Promise.all([
+        opencodeSession.fetchSessions(directory),
+        opencodeSession.fetchSessionRunStatus(directory),
+      ]);
+      const topLevel = dedupeSessionsById((sessions as Session[]).filter(isTopLevelSession));
+      set((state) => {
+        const currentPath = resolveCurrentProjectPath(state);
+        const sessionRunStatus = mergeSessionRunStatus(state.sessionRunStatus, serverRunStatus);
+        const nextState = {
+          sessions: topLevel,
+          sessionRunStatus,
+          loading: false,
+          error: null,
+        };
+        if (!currentPath) return nextState;
+        const previous = state.byProject[currentPath] ?? emptySessionSnapshot();
+        return {
+          ...nextState,
+          byProject: persistProjectSnapshot(state.byProject, currentPath, {
+            ...previous,
+            sessions: topLevel,
+            sessionRunStatus,
+            activeSessionId: state.activeSessionId,
+            selectedSubAgentId: state.selectedSubAgentId,
+            subAgents: state.subAgents,
+          }),
+        };
       });
+      await resyncRunningProjectSessions();
     } catch (e) {
       set({ loading: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  prefetchProjectSessions: async (projectPath) => {
+    const path = projectPath.trim();
+    if (!path) return;
+    try {
+      const [sessions, serverRunStatus] = await Promise.all([
+        opencodeSession.fetchSessions(path),
+        opencodeSession.fetchSessionRunStatus(path),
+      ]);
+      const topLevel = dedupeSessionsById((sessions as Session[]).filter(isTopLevelSession));
+      set((state) => {
+        const previous = state.byProject[path] ?? emptySessionSnapshot();
+        return {
+          byProject: persistProjectSnapshot(state.byProject, path, {
+            ...previous,
+            sessions: topLevel,
+            sessionRunStatus: mergeSessionRunStatus(previous.sessionRunStatus, serverRunStatus, true),
+          }),
+        };
+      });
+    } catch (e) {
+      console.error('[SessionStore] prefetchProjectSessions failed:', e);
     }
   },
 
@@ -124,6 +540,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   subscribeToEvents: () => {
+    const unregisterCrossProject = registerCrossProjectEventHandler((eventDirectory, event) => {
+      get().applyCrossProjectSessionEvent(eventDirectory, event);
+    });
+
     const unsubscribers: Array<() => void> = [];
 
     unsubscribers.push(
@@ -139,9 +559,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           }
           const exists = get().sessions.some((s) => s.id === info.id);
           if (!exists && isTopLevelSession(session)) {
-            set((state) => ({
-              sessions: dedupeSessionsById([session, ...state.sessions]),
-            }));
+            set((state) => {
+              const sessions = dedupeSessionsById([session, ...state.sessions]);
+              const currentPath = resolveCurrentProjectPath(state);
+              if (!currentPath) return { sessions };
+              const previous = state.byProject[currentPath] ?? emptySessionSnapshot();
+              return {
+                sessions,
+                byProject: persistProjectSnapshot(state.byProject, currentPath, {
+                  ...previous,
+                  sessions,
+                }),
+              };
+            });
           }
           void get().fetchSubAgents();
         }
@@ -165,11 +595,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           if (!isTopLevelSession(session)) return;
           set((state) => {
             const exists = state.sessions.some((s) => s.id === session.id);
-            if (!exists) {
-              return { sessions: dedupeSessionsById([session, ...state.sessions]) };
-            }
+            const sessions = exists
+              ? state.sessions.map((s) => (s.id === session.id ? { ...s, ...session } : s))
+              : dedupeSessionsById([session, ...state.sessions]);
+            const currentPath = resolveCurrentProjectPath(state);
+            if (!currentPath) return { sessions };
+            const previous = state.byProject[currentPath] ?? emptySessionSnapshot();
             return {
-              sessions: state.sessions.map((s) => (s.id === session.id ? { ...s, ...session } : s)),
+              sessions,
+              byProject: persistProjectSnapshot(state.byProject, currentPath, {
+                ...previous,
+                sessions,
+              }),
             };
           });
         }
@@ -199,6 +636,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         } else if (status.type === 'idle') {
           get().setSessionRunStatus(sessionID, 'idle');
         }
+        const parentID = resolveSubAgentParentSessionId(get(), sessionID);
+        if (parentID) void get().fetchSubAgents(parentID);
       }),
     );
 
@@ -207,8 +646,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const props = extractEventPayload(event as Record<string, unknown>);
         const sessionID = String(props.sessionID ?? props.sessionId ?? '');
         if (sessionID) get().setSessionRunStatus(sessionID, 'idle');
-        get().fetchSessions();
-        get().fetchSubAgents();
+        const parentID = sessionID ? resolveSubAgentParentSessionId(get(), sessionID) : undefined;
+        if (parentID) {
+          void get().fetchSubAgents(parentID);
+        } else {
+          void get().fetchSubAgents();
+        }
       }),
     );
 
@@ -217,14 +660,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const props = extractEventPayload(event as Record<string, unknown>);
         const sessionID = String(props.sessionID ?? props.sessionId ?? '');
         if (!sessionID) return;
-        const known =
-          get().sessions.some((s) => s.id === sessionID) ||
-          get().subAgents.some((a) => a.id === sessionID || a.sessionId === sessionID);
-        if (known) get().setSessionRunStatus(sessionID, 'error');
+        get().setSessionRunStatus(sessionID, 'error');
+        const parentID = resolveSubAgentParentSessionId(get(), sessionID);
+        if (parentID) void get().fetchSubAgents(parentID);
       }),
     );
 
     return () => {
+      unregisterCrossProject();
       unsubscribers.forEach((unsub) => unsub());
     };
   },

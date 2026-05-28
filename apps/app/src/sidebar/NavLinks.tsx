@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { t } from '../constants/i18n';
@@ -8,10 +8,9 @@ import {
   Zap,
   Settings,
   FolderOpen,
-  ChevronRight,
-  MessageSquare,
   Puzzle,
   MoreHorizontal,
+  Plus,
   Loader2,
   AlertCircle,
   Trash2,
@@ -19,7 +18,7 @@ import {
 import { useClickOutside } from '../hooks/useClickOutside';
 import { useRemoveProject } from '../hooks/useRemoveProject';
 import { SearchModal } from '../components/SearchModal';
-import { useSessionStore, type SessionRunStatus } from '../stores/session';
+import { useSessionStore } from '../stores/session';
 import { usePermissionStore } from '../stores/permission';
 import { opencodeSession } from '../services/opencodeAdapter';
 import { useTeamStore } from '../stores/team';
@@ -28,6 +27,7 @@ import { useSDK } from '../sdk/provider';
 import { useProjectStore } from '../stores/project';
 import { useMessageStore } from '../stores/message';
 import { selectSession, selectTeamMember, selectSubAgent } from '../services/executionView';
+import { resetProjectScope } from '../services/projectScopeReset';
 import { isTopLevelSession, dedupeSessionsById } from '../utils/sessionHierarchy';
 import {
   displayNameFromSpawnTitle,
@@ -36,7 +36,8 @@ import {
   resolveTaskSubAgentsForDisplay,
   resolveTeamMembersForDisplay,
 } from '../services/teamDisplay';
-import { buildSessionsNeedingUserAction } from '../utils/sessionUserAction';
+import { buildSessionsNeedingUserActionForProject } from '../utils/sessionUserAction';
+import { ProjectSessionsList } from './ProjectSessionsList';
 import {
   getMemberActivityLabel,
   TeamMemberActivityText,
@@ -62,6 +63,7 @@ export function NavLinks() {
   const handleNewChat = () => {
     if (hasProject) {
       useSessionStore.getState().setActiveSession(null);
+      useMessageStore.getState().setActiveSession(null);
       navigate('/');
     } else {
       navigate('/startup');
@@ -125,45 +127,6 @@ interface NavLinkButtonProps {
   onClick: () => void;
 }
 
-function SessionRunStatusIcon({
-  status,
-  isActive,
-  needsUserAction,
-}: {
-  status?: SessionRunStatus;
-  isActive: boolean;
-  needsUserAction?: boolean;
-}) {
-  if (needsUserAction) {
-    return (
-      <span
-        className="w-2 h-2 rounded-full bg-[#F59E0B] shrink-0"
-        title="需要确认"
-      />
-    );
-  }
-  if (status === 'running') {
-    return <Loader2 size={14} className="shrink-0 animate-spin text-[#2B8FFF]" />;
-  }
-  if (status === 'error') {
-    return <AlertCircle size={14} className="shrink-0 text-[#EF4444]" />;
-  }
-  if (status === 'idle') {
-    return (
-      <MessageSquare
-        size={14}
-        className={isActive ? 'text-[#1F1F1F] shrink-0' : 'text-[#9A9A9A] shrink-0'}
-      />
-    );
-  }
-  return (
-    <MessageSquare
-      size={14}
-      className={isActive ? 'text-[#1F1F1F] shrink-0' : 'text-[#9A9A9A] shrink-0'}
-    />
-  );
-}
-
 function NavLinkButton({ icon, label, active, onClick }: NavLinkButtonProps) {
   return (
     <button
@@ -181,7 +144,6 @@ function NavLinkButton({ icon, label, active, onClick }: NavLinkButtonProps) {
 }
 
 export function ProjectSection() {
-  const [isOpen, setIsOpen] = useState(true);
   const [contextMenu, setContextMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null);
   const [renameSessionId, setRenameSessionId] = useState<string | null>(null);
   const [renameSessionName, setRenameSessionName] = useState('');
@@ -191,17 +153,14 @@ export function ProjectSection() {
   const projectMenuRef = useRef<HTMLDivElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
-  const { restartWithDir, reconnecting } = useSDK();
-  const { sessions, subAgents, activeSessionId, selectedSubAgentId, setActiveSession, sessionRunStatus } = useSessionStore();
+  const { restartWithDir, reconnecting, connected } = useSDK();
+  const { sessions, subAgents, activeSessionId, selectedSubAgentId, sessionRunStatus, byProject } =
+    useSessionStore();
   const loadingBySession = useMessageStore((s) => s.loadingBySession);
   const sessionActivity = useMessageStore((s) => s.sessionActivity);
   const pendingPermissions = usePermissionStore((s) => s.pendingPermissions);
   const pendingQuestions = usePermissionStore((s) => s.pendingQuestions);
-  const sessionsNeedingUserAction = buildSessionsNeedingUserAction(
-    pendingPermissions,
-    pendingQuestions,
-    sessionActivity,
-  );
+  const pendingByDirectory = usePermissionStore((s) => s.pendingByDirectory);
   const { teamModeEnabled, currentTeam, selectedMemberId } = useTeamStore();
   const { projects, currentProject, setProject } = useProjectStore();
   const { removeProjectWithConfirm } = useRemoveProject();
@@ -209,32 +168,134 @@ export function ProjectSection() {
   useClickOutside([projectMenuRef], () => setProjectMenuId(null), projectMenuId !== null);
   useEscapeKey(() => setProjectMenuId(null), projectMenuId !== null);
 
-  const performSwitch = useCallback(async (project: ProjectItem) => {
-    if (project.id === currentProject.id || reconnecting) return;
+  useEffect(() => {
+    for (const project of projects) {
+      const path = project.path.trim();
+      if (!path || project.id === currentProject.id) continue;
+      void useSessionStore.getState().prefetchProjectSessions(path);
+    }
+  }, [projects, currentProject.id]);
+
+  useEffect(() => {
+    if (!connected) return;
+
+    const refreshPending = () => {
+      void usePermissionStore.getState().fetchPendingPermissions();
+      void usePermissionStore.getState().fetchPendingQuestions();
+    };
+
+    refreshPending();
+    const timer = window.setInterval(refreshPending, 3000);
+    return () => window.clearInterval(timer);
+  }, [connected]);
+
+  useEffect(() => {
+    if (!connected) return;
+
+    const refreshBackgroundPending = () => {
+      for (const project of projects) {
+        if (project.id === currentProject.id) continue;
+        const path = project.path.trim();
+        if (!path) continue;
+        void usePermissionStore.getState().fetchPendingForDirectory(path);
+      }
+    };
+
+    refreshBackgroundPending();
+    const timer = window.setInterval(refreshBackgroundPending, 8000);
+    return () => window.clearInterval(timer);
+  }, [connected, projects, currentProject.id]);
+
+  useEffect(() => {
+    const refreshAllRunStatus = () => {
+      for (const project of projects) {
+        const path = project.path.trim();
+        if (!path) continue;
+        void useSessionStore.getState().refreshProjectRunStatus(path);
+      }
+    };
+
+    refreshAllRunStatus();
+    const timer = window.setInterval(refreshAllRunStatus, 2500);
+    return () => window.clearInterval(timer);
+  }, [projects]);
+
+  useEffect(() => {
+    if (!teamModeEnabled || !currentTeam?.sessionId) return;
+
+    const leadSessionId = currentTeam.sessionId;
+    const refreshTeamScope = () => {
+      void useSessionStore.getState().fetchSubAgents(leadSessionId);
+      void useTeamStore.getState().refreshCurrentTeam();
+    };
+
+    refreshTeamScope();
+    const timer = window.setInterval(refreshTeamScope, 3000);
+    return () => window.clearInterval(timer);
+  }, [teamModeEnabled, currentTeam?.sessionId, currentTeam?.id]);
+
+  const sessionsForProject = useCallback(
+    (project: ProjectItem) => {
+      const path = project.path.trim();
+      if (project.id === currentProject.id) {
+        return dedupeSessionsById(sessions.filter(isTopLevelSession));
+      }
+      return dedupeSessionsById((byProject[path]?.sessions ?? []).filter(isTopLevelSession));
+    },
+    [byProject, currentProject.id, sessions],
+  );
+
+  const runStatusForProject = useCallback(
+    (project: ProjectItem) => {
+      const path = project.path.trim();
+      if (project.id === currentProject.id) return sessionRunStatus;
+      return byProject[path]?.sessionRunStatus ?? {};
+    },
+    [byProject, currentProject.id, sessionRunStatus],
+  );
+
+  const activeSessionIdForProject = useCallback(
+    (project: ProjectItem) => {
+      if (project.id !== currentProject.id) return null;
+      return activeSessionId;
+    },
+    [activeSessionId, currentProject.id],
+  );
+
+  const performSwitch = useCallback(async (project: ProjectItem, sessionIdAfterSwitch?: string) => {
+    if (project.id === currentProject.id || reconnecting) {
+      if (sessionIdAfterSwitch) {
+        selectSession(sessionIdAfterSwitch);
+        navigate('/');
+      }
+      return;
+    }
 
     const previousProject = currentProject;
     setSwitchError(null);
     setSwitchingProjectId(project.id);
 
-    // Optimistic UI: switch project immediately, restart server in background
+    resetProjectScope(project.path);
     setProject(project);
-    setActiveSession(null);
-    useMessageStore.getState().setActiveSession(null);
-    useMessageStore.getState().clearMessages();
-    useSessionStore.getState().setSessions([]);
+    void useSessionStore.getState().refreshProjectRunStatus(project.path);
     navigate('/');
 
     const { url, error } = await restartWithDir(project.path);
 
     if (!url) {
+      resetProjectScope(previousProject.path);
       setProject(previousProject);
+      await restartWithDir(previousProject.path);
       setSwitchError(error || '启动 opencode 服务失败，请重试');
       setSwitchingProjectId(null);
       return;
     }
 
+    if (sessionIdAfterSwitch) {
+      selectSession(sessionIdAfterSwitch);
+    }
     setSwitchingProjectId(null);
-  }, [currentProject, reconnecting, restartWithDir, setProject, setActiveSession, navigate]);
+  }, [currentProject, reconnecting, restartWithDir, setProject, navigate]);
 
   const handleProjectSwitch = (project: ProjectItem) => {
     void performSwitch(project);
@@ -245,10 +306,37 @@ export function ProjectSection() {
     void removeProjectWithConfirm(project);
   };
 
-  const handleSessionClick = (id: string) => {
-    selectSession(id);
-    navigate('/');
+  const handleSessionClick = (project: ProjectItem, sessionId: string) => {
+    if (project.id === currentProject.id) {
+      selectSession(sessionId);
+      navigate('/');
+      return;
+    }
+    void performSwitch(project, sessionId);
   };
+
+  const openNewChatForProject = useCallback(async (project: ProjectItem) => {
+    setProjectMenuId(null);
+
+    const clearToNewChat = () => {
+      useSessionStore.getState().setActiveSession(null);
+      useSessionStore.getState().setSelectedSubAgentId(null);
+      useTeamStore.getState().setSelectedMemberId(null);
+      useMessageStore.getState().setActiveSession(null);
+      navigate('/');
+    };
+
+    if (project.id === currentProject.id) {
+      if (reconnecting || switchingProjectId) return;
+      clearToNewChat();
+      return;
+    }
+
+    await performSwitch(project);
+    if (useProjectStore.getState().currentProject.id === project.id) {
+      clearToNewChat();
+    }
+  }, [currentProject.id, navigate, performSwitch, reconnecting, switchingProjectId]);
 
   const handleContextMenu = (e: React.MouseEvent, sessionId: string) => {
     e.preventDefault();
@@ -312,48 +400,80 @@ export function ProjectSection() {
   const stableCancelRename = useCallback(cancelRename, [renameSessionId]);
   useEscapeKey(stableCancelRename, !!renameSessionId);
 
-  return (
-    <div className="px-3 py-2">
-      <div className="text-xs text-[#9A9A9A] font-medium mb-2 px-3 uppercase tracking-wider">项目</div>
+  const projectScrollRef = useRef<HTMLDivElement>(null);
+  const [sessionListMaxHeight, setSessionListMaxHeight] = useState(140);
 
-      
-      <div className="flex flex-col gap-0.5">
+  useLayoutEffect(() => {
+    const node = projectScrollRef.current;
+    if (!node) return;
+
+    const update = () => {
+      const projectCount = Math.max(projects.length, 1);
+      const perProject = Math.floor(node.clientHeight / projectCount);
+      const next = Math.max(136, Math.min(220, perProject - 36));
+      setSessionListMaxHeight(next);
+    };
+
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [projects.length]);
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col px-2 py-2">
+      <div className="mb-2 px-2 text-[11px] font-medium uppercase tracking-wider text-[#8A8A8A] dark:text-[#727272]">
+        项目
+      </div>
+
+      <div ref={projectScrollRef} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
         {projects.map((p) => {
           const isCurrent = currentProject.id === p.id;
           const isSwitching = switchingProjectId === p.id || (isCurrent && reconnecting);
+          const projectSessions = sessionsForProject(p);
+          const projectRunStatus = runStatusForProject(p);
+          const projectActiveSessionId = activeSessionIdForProject(p);
+          const projectSessionsNeedingUserAction = buildSessionsNeedingUserActionForProject(
+            p.path,
+            isCurrent,
+            pendingPermissions,
+            pendingQuestions,
+            pendingByDirectory,
+            sessionActivity,
+          );
+
           return (
-            <div key={p.id} className="relative group">
-              <div
-                className={`flex items-center rounded-lg ${
-                  isCurrent ? 'bg-[#E8E8E8]' : 'hover:bg-[#F0F0F0]'
-                }`}
-              >
+            <div key={p.id} className="relative group flex min-h-0 flex-col">
+              <div className="flex items-center rounded-md">
                 <button
                   onClick={() => {
                     setProjectMenuId(null);
-                    if (isCurrent) {
-                      setIsOpen(!isOpen);
-                    } else {
+                    if (!isCurrent) {
                       handleProjectSwitch(p);
-                      setIsOpen(true);
                     }
                   }}
                   disabled={!!switchingProjectId && switchingProjectId !== p.id}
-                  className={`flex items-center gap-2 flex-1 min-w-0 px-3 py-2 rounded-lg text-sm transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+                  className={`flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-[12px] transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                     isCurrent
-                      ? 'text-[#1F1F1F] font-medium'
-                      : 'text-[#6B6B6B] hover:text-[#1F1F1F]'
+                      ? 'text-[#666666] dark:text-[#BFBFBF]'
+                      : 'text-[#8A8A8A] dark:text-[#8A8A8A] hover:text-[#666666] dark:hover:text-[#B0B0B0]'
                   }`}
                 >
-                  <FolderOpen size={16} className={isCurrent ? 'text-[#1F1F1F]' : 'text-[#9A9A9A]'} />
-                  <span className="flex-1 text-left truncate">{p.name || p.path.split('/').pop() || '未选择项目'}</span>
-                  {isSwitching && <Loader2 size={14} className="shrink-0 animate-spin text-[#2B8FFF]" />}
-                  {isCurrent && !isSwitching && (
-                    <ChevronRight
-                      size={14}
-                      className={`text-[#9A9A9A] transition-transform ${isOpen ? 'rotate-90' : ''}`}
-                    />
-                  )}
+                  <FolderOpen size={14} className="shrink-0 opacity-70" />
+                  <span className="flex-1 truncate text-left">{p.name || p.path.split('/').pop() || '未选择项目'}</span>
+                  {isSwitching && <Loader2 size={12} className="shrink-0 animate-spin text-[#8A8A8A]" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void openNewChatForProject(p);
+                  }}
+                  disabled={!!switchingProjectId}
+                  className="shrink-0 rounded p-1 text-[#A3A3A3] opacity-0 transition-opacity hover:text-[#666666] group-hover:opacity-100 focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label="新对话"
+                >
+                  <Plus size={12} />
                 </button>
                 <button
                   type="button"
@@ -362,21 +482,22 @@ export function ProjectSection() {
                     setProjectMenuId(projectMenuId === p.id ? null : p.id);
                   }}
                   disabled={!!switchingProjectId}
-                  className="opacity-0 group-hover:opacity-100 focus:opacity-100 shrink-0 p-1.5 mr-1 rounded text-[#9A9A9A] hover:text-[#1F1F1F] hover:bg-[#E0E0E0] transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="mr-1 shrink-0 rounded p-1 text-[#A3A3A3] opacity-0 transition-opacity hover:text-[#666666] group-hover:opacity-100 focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
                   aria-label="项目操作"
                 >
-                  <MoreHorizontal size={14} />
+                  <MoreHorizontal size={12} />
                 </button>
               </div>
+
               {projectMenuId === p.id && (
                 <div
                   ref={projectMenuRef}
-                  className="absolute right-0 top-full mt-0.5 w-36 bg-white border border-[#E5E5E5] rounded-lg shadow-lg py-1 z-50"
+                  className="absolute right-0 top-7 z-50 w-36 rounded-lg border border-[#E5E5E5] bg-white py-1 shadow-lg dark:border-[#444444] dark:bg-[#2A2B2D]"
                 >
                   <button
                     type="button"
                     onClick={() => handleRemoveProject(p)}
-                    className="flex items-center gap-2 w-full px-3 py-2 text-sm text-[#EC5F66] hover:bg-[#FFF5F5] transition-colors"
+                    className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[#EC5F66] transition-colors hover:bg-[#FFF5F5]"
                   >
                     <Trash2 size={14} />
                     <span>移除项目</span>
@@ -384,148 +505,111 @@ export function ProjectSection() {
                 </div>
               )}
 
-              
-              {isCurrent && isOpen && (
-                <div className="ml-6 mt-1 flex flex-col gap-0.5">
-                  {sessions.length === 0 ? (
-                    <div className="px-3 py-4 text-xs text-[#B0B0B0]">暂无聊天</div>
-                  ) : (
-                    dedupeSessionsById(sessions.filter(isTopLevelSession)).map((s) => {
-              const isActive = activeSessionId === s.id;
-              const runStatus =
-                sessionRunStatus[s.id]
-                ?? (loadingBySession[s.id] ? 'running' : undefined);
-              const needsUserAction = sessionsNeedingUserAction.has(s.id);
-              return (
-                <div key={s.id}>
-                  <div
-                    onClick={() => handleSessionClick(s.id)}
-                    onContextMenu={(e) => handleContextMenu(e, s.id)}
-                    className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm cursor-pointer transition-colors group ${
-                      isActive
-                        ? 'bg-[#E8E8E8] text-[#1F1F1F] font-medium'
-                        : 'text-[#6B6B6B] hover:bg-[#F0F0F0]'
-                    }`}
-                  >
-                    <SessionRunStatusIcon status={runStatus} isActive={isActive} needsUserAction={needsUserAction} />
-                    <span className="flex-1 truncate">{s.title || s.cwd?.split('/').pop() || '未命名'}</span>
-                    <span className="text-[10px] text-[#9A9A9A]">{s.updatedAt ? formatTime(s.updatedAt) : ''}</span>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleContextMenu(e, s.id); }}
-                      className="opacity-0 group-hover:opacity-100 focus:opacity-100 p-0.5 rounded text-[#9A9A9A] hover:text-[#1F1F1F] hover:bg-[#E8E8E8] transition-opacity"
-                    >
-                      <MoreHorizontal size={14} />
-                    </button>
-                  </div>
-                  {isActive && (() => {
-                    const isTeamSession = teamModeEnabled && currentTeam && (
-                      currentTeam.sessionId === s.id
-                      || currentTeam.members.some((member) => member.sessionID === s.id)
-                    );
-                    const taskAgents = isTeamSession && currentTeam
-                      ? resolveTaskSubAgentsForDisplay(currentTeam, subAgents, s.id)
-                      : subAgents.filter((a) => a.parentSessionId === s.id);
+              <div className="ml-3 flex min-h-0 flex-col border-l border-[#E8E8E8] pl-1 dark:border-[#3A3A3A]">
+                <ProjectSessionsList
+                  sessions={projectSessions}
+                  activeSessionId={projectActiveSessionId}
+                  sessionRunStatus={projectRunStatus}
+                  loadingBySession={loadingBySession}
+                  sessionActivity={sessionActivity}
+                  sessionsNeedingUserAction={projectSessionsNeedingUserAction}
+                  onSessionClick={(sessionId) => handleSessionClick(p, sessionId)}
+                  onSessionContextMenu={handleContextMenu}
+                  formatTime={formatTime}
+                  listMaxHeight={sessionListMaxHeight}
+                />
 
-                    const renderTaskSubAgents = () => {
-                      if (taskAgents.length === 0) return null;
-                      return (
-                        <div className={`ml-3 mt-0.5 flex flex-col gap-px border-l pl-2 ${isTeamSession ? 'border-[#E5E5E5]' : 'border-[#E5E5E5]'}`}>
-                          {isTeamSession && (
-                            <div className="px-2 py-0.5 text-[9px] text-[#9A9A9A] uppercase tracking-wider">Task 子 Agent</div>
-                          )}
-                          {taskAgents.map((agent) => (
+                {isCurrent && projectActiveSessionId && (() => {
+                  const s = projectSessions.find((item) => item.id === projectActiveSessionId);
+                  if (!s) return null;
+                  const isTeamSession = teamModeEnabled && currentTeam && (
+                    currentTeam.sessionId === s.id
+                    || currentTeam.members.some((member) => member.sessionID === s.id)
+                  );
+                  const taskAgents = isTeamSession && currentTeam
+                    ? resolveTaskSubAgentsForDisplay(currentTeam, subAgents, s.id)
+                    : subAgents.filter((a) => a.parentSessionId === s.id);
+
+                  const renderTaskSubAgents = () => {
+                    if (taskAgents.length === 0) return null;
+                    return (
+                      <div className="ml-2 mt-1 flex flex-col gap-px border-l border-[#ECECEC] pl-2 dark:border-[#3A3A3A]">
+                        {taskAgents.map((agent) => (
+                          <div
+                            key={agent.id}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (currentTeam && isTeammateChildSession(agent, currentTeam)) {
+                                const members = resolveTeamMembersForDisplay(
+                                  currentTeam,
+                                  subAgents,
+                                  s.id,
+                                  sessionRunStatus,
+                                );
+                                const member = members.find((m) => m.sessionID === agent.sessionId);
+                                if (member) {
+                                  selectTeamMember(member.id);
+                                  return;
+                                }
+                              }
+                              selectSubAgent(agent.id);
+                            }}
+                            className={`flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[11px] transition-colors ${
+                              selectedSubAgentId === agent.id
+                                ? 'text-[#666666] dark:text-[#D4D4D4]'
+                                : 'text-[#8A8A8A] hover:text-[#666666] dark:hover:text-[#B0B0B0]'
+                            }`}
+                          >
+                            <span className="truncate flex-1">{displayNameFromSpawnTitle(agent.title)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  };
+
+                  if (isTeamSession && currentTeam) {
+                    const displayMembers = resolveTeamMembersForDisplay(
+                      currentTeam,
+                      subAgents,
+                      s.id,
+                      sessionRunStatus,
+                    );
+                    return (
+                      <div className="mt-1">
+                        {displayMembers.map((member) => {
+                          const activityLabel = getMemberActivityLabel(
+                            member.sessionID ? sessionActivity[member.sessionID] : undefined,
+                          );
+                          const isSelected = selectedMemberId === member.id;
+                          return (
                             <div
-                              key={agent.id}
+                              key={member.id}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                if (currentTeam && isTeammateChildSession(agent, currentTeam)) {
-                                  const members = resolveTeamMembersForDisplay(currentTeam, subAgents, s.id);
-                                  const member = members.find((m) => m.sessionID === agent.sessionId);
-                                  if (member) {
-                                    selectTeamMember(member.id);
-                                    return;
-                                  }
-                                }
-                                selectSubAgent(agent.id);
+                                selectTeamMember(member.id);
                               }}
-                              className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs cursor-pointer transition-colors ${
-                                selectedSubAgentId === agent.id
-                                  ? 'bg-[#EEF4FF] text-[#2B8FFF] font-medium'
-                                  : 'text-[#6B6B6B] hover:bg-[#F0F0F0]'
+                              className={`flex min-w-0 cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[11px] transition-colors ${
+                                isSelected
+                                  ? 'text-[#666666] dark:text-[#D4D4D4]'
+                                  : 'text-[#8A8A8A] hover:text-[#666666] dark:hover:text-[#B0B0B0]'
                               }`}
                             >
-                              {agent.status === 'running' ? (
-                                <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none">
-                                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5" strokeDasharray="31.4 31.4" strokeLinecap="round" />
-                                </svg>
-                              ) : agent.status === 'completed' ? (
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-                                  <circle cx="12" cy="12" r="10" stroke="#10A37F" strokeWidth="2" />
-                                  <path d="M8 12l2.5 2.5L16 9" stroke="#10A37F" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                                </svg>
-                              ) : (
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-                                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" />
-                                </svg>
+                              <TeamMemberStatusIndicator status={member.status} />
+                              <span className="min-w-0 flex-1 truncate">{memberDisplayName(member, s.title)}</span>
+                              {member.status === 'working' && (
+                                <TeamMemberActivityText label={activityLabel ?? '执行中'} />
                               )}
-                              <span className="flex-1 truncate">{displayNameFromSpawnTitle(agent.title)}</span>
                             </div>
-                          ))}
-                        </div>
-                      );
-                    };
+                          );
+                        })}
+                        {renderTaskSubAgents()}
+                      </div>
+                    );
+                  }
 
-                    if (isTeamSession && currentTeam) {
-                      const displayMembers = resolveTeamMembersForDisplay(currentTeam, subAgents, s.id);
-                      return (
-                        <>
-                          <div className="px-2 py-0.5 text-[9px] text-[#9A9A9A] uppercase tracking-wider ml-3">团队成员</div>
-                          <div className="ml-3 mt-0.5 mb-0.5 flex flex-col gap-px border-l border-[#2B8FFF] pl-2">
-                            {displayMembers.map((member) => {
-                              const activityLabel = getMemberActivityLabel(
-                                member.sessionID ? sessionActivity[member.sessionID] : undefined,
-                              );
-                              const isSelected = selectedMemberId === member.id;
-                              const isWorking = member.status === 'working';
-                              return (
-                              <div
-                                key={member.id}
-                                onClick={(e) => { e.stopPropagation(); selectTeamMember(member.id); }}
-                                className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs cursor-pointer transition-colors min-w-0 ${
-                                  isSelected
-                                    ? 'bg-[#EEF4FF] text-[#2B8FFF] font-medium'
-                                    : isWorking
-                                      ? 'bg-[#F8FBFF] text-[#1F1F1F] hover:bg-[#EEF4FF]'
-                                      : 'text-[#6B6B6B] hover:bg-[#F0F0F0]'
-                                }`}
-                              >
-                                <TeamMemberStatusIndicator status={member.status} />
-                                <span className="truncate min-w-0 flex-1">
-                                  {memberDisplayName(member, s.title)}
-                                </span>
-                                {isWorking && (
-                                  <TeamMemberActivityText label={activityLabel ?? '执行中'} />
-                                )}
-                                {member.role === 'lead' && (
-                                  <span className="text-[9px] px-0.5 rounded bg-[#EEF4FF] text-[#2B8FFF] shrink-0 ml-auto">Lead</span>
-                                )}
-                              </div>
-                              );
-                            })}
-                          </div>
-                          {renderTaskSubAgents()}
-                        </>
-                      );
-                    }
-
-                    return renderTaskSubAgents();
-                  })()}
-                </div>
-              );
-            })
-)}
-                </div>
-              )}
+                  return renderTaskSubAgents();
+                })()}
+              </div>
             </div>
           );
         })}

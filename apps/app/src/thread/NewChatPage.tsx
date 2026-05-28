@@ -8,6 +8,8 @@ import { useEscapeKey } from '../hooks/useEscapeKey';
 import { opencodeSession } from '../services/opencodeAdapter';
 import { useSDK } from '../sdk/provider';
 import { deferAfterNativeDialog } from '../utils/deferAfterNativeDialog';
+import { resetProjectScope } from '../services/projectScopeReset';
+import { useMessageStore } from '../stores/message';
 
 type Project = { id: string; name: string; path: string };
 
@@ -46,9 +48,18 @@ export function NewChatPage({ standalone }: { standalone?: boolean }) {
     if (isNew) {
       addProject(project);
     }
+    resetProjectScope(project.path);
     setProject(project);
-    useSessionStore.getState().setActiveSession(null);
-    opencodeSession.createSession(project.path);
+    if (isNew) {
+      useSessionStore.getState().setActiveSession(null);
+      useMessageStore.getState().setActiveSession(null);
+      const created = await opencodeSession.createSession(project.path);
+      if (created) {
+        useSessionStore.getState().addSession(created);
+        useSessionStore.getState().setActiveSession(created.id);
+        useMessageStore.getState().setActiveSession(created.id);
+      }
+    }
     setRestarting(false);
     navigate('/');
   };
@@ -59,7 +70,7 @@ export function NewChatPage({ standalone }: { standalone?: boolean }) {
 
   const handleNewChat = (project: Project) => {
     setMenuProjectId(null);
-    switchToProject(project, false);
+    switchToProject(project, true);
   };
 
   const handleAddProject = async () => {

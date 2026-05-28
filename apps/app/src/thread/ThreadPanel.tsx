@@ -16,23 +16,32 @@ import { toChatMessage } from './utils';
 import { ensureModelCapabilitiesReady } from './composer/models';
 import { clearExecutionView, getEffectiveSessionId } from '../services/executionView';
 import { isPendingSessionId } from '../utils/pendingSession';
+import { isSessionExecuting } from '../utils/sidebarSessionStatus';
 import { EmbeddedTerminal } from '../components/EmbeddedTerminal';
 import { useTerminalStore } from '../stores/terminal';
 import { questionLog } from '../utils/questionDebug';
-import { pickQuestionForSessionTree } from '../utils/sessionQuestionTree';
+import { pickQuestionForSessionTree, collectRelatedSessionIds } from '../utils/sessionQuestionTree';
+import type { Session } from '@opencodex/types';
+import type { SubAgentItem } from '../types';
 
 const EMPTY_COMPACTIONS: CompactionActivity[] = [];
 
 function pickPermissionForView(
   permissions: ReturnType<typeof usePermissionStore.getState>['pendingPermissions'],
   preferredSessionId: string | null,
+  sessions: Session[],
+  subAgents: SubAgentItem[],
 ) {
   if (permissions.length === 0) return null;
   if (preferredSessionId) {
-    const matched = permissions.find((p) => p.sessionId === preferredSessionId);
-    if (matched) return matched;
+    const related = collectRelatedSessionIds(preferredSessionId, sessions, subAgents);
+    for (const sessionId of related) {
+      const matched = permissions.find((p) => p.sessionId === sessionId);
+      if (matched) return matched;
+    }
+    return null;
   }
-  return permissions[0];
+  return null;
 }
 
 export function ThreadPanel(props: { leftCollapsed?: boolean; onToggleLeft?: () => void }) {
@@ -77,7 +86,12 @@ export function ThreadPanel(props: { leftCollapsed?: boolean; onToggleLeft?: () 
   }, []);
 
   const effectiveSessionId = getEffectiveSessionId();
-  const currentPermission = pickPermissionForView(pendingPermissions, effectiveSessionId);
+  const currentPermission = pickPermissionForView(
+    pendingPermissions,
+    effectiveSessionId,
+    sessions,
+    subAgents,
+  );
   const currentQuestion = pickQuestionForSessionTree(
     pendingQuestions,
     effectiveSessionId,
@@ -216,10 +230,14 @@ export function ThreadPanel(props: { leftCollapsed?: boolean; onToggleLeft?: () 
   const displaySkillName = isSkillCreator ? (skillName || 'Skill Creator') : skillName;
   const displaySkillIcon = isSkillCreator ? (skillIcon || '✏️') : skillIcon;
 
-  const isStreaming = !!(effectiveSessionId && loadingBySession[effectiveSessionId]);
-  const sessionRunStatus = useSessionStore((s) =>
-    effectiveSessionId ? s.sessionRunStatus[effectiveSessionId] : undefined,
+  const sessionRunStatusMap = useSessionStore((s) => s.sessionRunStatus);
+  const isStreaming = isSessionExecuting(
+    effectiveSessionId,
+    sessionRunStatusMap,
+    loadingBySession,
+    sessionActivity,
   );
+  const sessionRunStatus = effectiveSessionId ? sessionRunStatusMap[effectiveSessionId] : undefined;
   const liveActivity = effectiveSessionId ? sessionActivity[effectiveSessionId] ?? null : null;
   const sessionCompactions = useMemo(
     () =>
@@ -331,8 +349,9 @@ export function ThreadPanel(props: { leftCollapsed?: boolean; onToggleLeft?: () 
             restoreText={composerRestoreText}
             onRestoreHandled={() => setComposerRestoreText(null)}
             onAbort={() => {
-              if (activeSessionId) {
-                useMessageStore.getState().abortSession(activeSessionId);
+              const abortSessionId = effectiveSessionId ?? activeSessionId;
+              if (abortSessionId) {
+                useMessageStore.getState().abortSession(abortSessionId);
               }
             }}
           />

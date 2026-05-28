@@ -15,7 +15,7 @@ import {
 import type { TeamMemberStatus } from '../types';
 
 export function ThreadHeader({ leftCollapsed, onToggleLeft }: { leftCollapsed?: boolean; onToggleLeft?: () => void }) {
-  const { sessions, activeSessionId, removeSession, updateSession, subAgents, selectedSubAgentId } = useSessionStore();
+  const { sessions, activeSessionId, removeSession, updateSession, subAgents, selectedSubAgentId, sessionRunStatus } = useSessionStore();
   const { currentTeam, setCurrentTeamBySession, teamModeEnabled, selectedMemberId } = useTeamStore();
   const [showDropdown, setShowDropdown] = useState(false);
   const [memberTooltip, setMemberTooltip] = useState<{ idx: number; top: number; left: number } | null>(null);
@@ -30,9 +30,9 @@ export function ThreadHeader({ leftCollapsed, onToggleLeft }: { leftCollapsed?: 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const displayMembers = useMemo(
     () => (currentTeam && activeSessionId
-      ? resolveTeamMembersForDisplay(currentTeam, subAgents, activeSessionId)
+      ? resolveTeamMembersForDisplay(currentTeam, subAgents, activeSessionId, sessionRunStatus)
       : []),
-    [currentTeam, subAgents, activeSessionId],
+    [currentTeam, subAgents, activeSessionId, sessionRunStatus],
   );
   const selectedMember = teamModeEnabled && displayMembers.length > 0 && selectedMemberId
     ? displayMembers.find(m => m.id === selectedMemberId)

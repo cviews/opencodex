@@ -28,6 +28,8 @@ export const en: Record<string, string> = {
   'sidebar.recentChats': 'Chats',
   'sidebar.newChatButton': 'New chat',
   'sidebar.projectBadge': 'project',
+  'sidebar.seeMore': 'See more ({count})',
+  'sidebar.noChats': 'No chats yet',
 
   // Context menu
   'context.rename': 'Rename',

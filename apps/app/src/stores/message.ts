@@ -4,14 +4,16 @@ import type { ToolCall } from '../types';
 import { opencodeMessage, opencodeSession, opencodeTeam } from '../services/opencodeAdapter';
 import { handleTeamMessageToolSuccess } from '../services/teamMemberExecution';
 import { useTeamStore } from './team';
-import { on, EventType, extractEventPayload } from '../sdk/eventRouter';
+import { on, EventType, extractEventPayload, registerCrossProjectEventHandler } from '../sdk/eventRouter';
 import { sanitizeUserMessageDisplay } from '../thread/displayContent';
 import { enrichMessageFromParts, normalizeToolPart } from '../thread/messageParts';
 import { toolLooksFailed } from '../thread/toolFailure';
 import { debugError, debugWarn, pipelineMark, pipelineReset } from '../utils/debugLog';
 import { isPendingSessionId } from '../utils/pendingSession';
-import { useSessionStore } from './session';
+import { useSessionStore, type SessionRunStatus } from './session';
+import { useProjectStore } from './project';
 import { questionLog } from '../utils/questionDebug';
+import { setSessionRunStatusSyncHandler } from '../services/sessionRunStatusSync';
 
 import type { CompactionActivity } from '../thread/compactionActivity';
 import { modelSupportsReasoning, noteRuntimeModelReasoning, parseModelRef, getCachedDefaultModelRef } from '../thread/composer/models';
@@ -23,6 +25,11 @@ const compactionCache = new Map<string, CompactionActivity[]>();
 const pendingDisplayBySession = new Map<string, string[]>();
 const OPTIMISTIC_USER_PREFIX = 'pending-user-';
 
+function scopedSessionKey(sessionId: string): string {
+  const project = useProjectStore.getState().currentProject.path?.trim() || '';
+  return project ? `${project}::${sessionId}` : sessionId;
+}
+
 function isOptimisticUserMessage(msg: Message): boolean {
   return msg.role === 'user' && msg.id.startsWith(OPTIMISTIC_USER_PREFIX);
 }
@@ -32,19 +39,21 @@ function withoutOptimisticUsers(messages: Message[]): Message[] {
 }
 
 function queuePendingDisplay(sessionId: string, displayContent: string): void {
-  const queue = pendingDisplayBySession.get(sessionId) ?? [];
+  const key = scopedSessionKey(sessionId);
+  const queue = pendingDisplayBySession.get(key) ?? [];
   queue.push(displayContent);
-  pendingDisplayBySession.set(sessionId, queue);
+  pendingDisplayBySession.set(key, queue);
 }
 
 function takePendingDisplay(sessionId: string): string | undefined {
-  const queue = pendingDisplayBySession.get(sessionId);
+  const key = scopedSessionKey(sessionId);
+  const queue = pendingDisplayBySession.get(key);
   if (!queue || queue.length === 0) return undefined;
   const next = queue.shift();
   if (queue.length === 0) {
-    pendingDisplayBySession.delete(sessionId);
+    pendingDisplayBySession.delete(key);
   } else {
-    pendingDisplayBySession.set(sessionId, queue);
+    pendingDisplayBySession.set(key, queue);
   }
   return next;
 }
@@ -66,19 +75,19 @@ function enrichUserMessageDisplay(msg: Message, sessionId: string, consumePendin
 }
 
 function getCachedMessages(sessionId: string): Message[] {
-  return messageCache.get(sessionId) ?? [];
+  return messageCache.get(scopedSessionKey(sessionId)) ?? [];
 }
 
 function setCachedMessages(sessionId: string, messages: Message[]): void {
-  messageCache.set(sessionId, messages);
+  messageCache.set(scopedSessionKey(sessionId), messages);
 }
 
 function getCachedCompactions(sessionId: string): CompactionActivity[] {
-  return compactionCache.get(sessionId) ?? [];
+  return compactionCache.get(scopedSessionKey(sessionId)) ?? [];
 }
 
 function setCachedCompactions(sessionId: string, compactions: CompactionActivity[]): void {
-  compactionCache.set(sessionId, compactions);
+  compactionCache.set(scopedSessionKey(sessionId), compactions);
 }
 
 function findLastUserMessageId(sessionId: string): string | undefined {
@@ -173,7 +182,7 @@ function ensureRunningCompaction(
 }
 
 function upsertCachedMessage(sessionId: string, msg: Message): void {
-  const existing = messageCache.get(sessionId) ?? [];
+  const existing = getCachedMessages(sessionId);
   const idx = existing.findIndex((m) => m.id === msg.id);
   if (idx !== -1) {
     const prev = existing[idx];
@@ -188,11 +197,11 @@ function upsertCachedMessage(sessionId: string, msg: Message): void {
   } else {
     existing.push(msg);
   }
-  messageCache.set(sessionId, existing);
+  setCachedMessages(sessionId, existing);
 }
 
 function appendDeltaToCachedMessage(sessionId: string, messageId: string, delta: string): void {
-  const existing = messageCache.get(sessionId) ?? [];
+  const existing = getCachedMessages(sessionId);
   const idx = existing.findIndex((m) => m.id === messageId);
   if (idx === -1) {
     existing.push({
@@ -202,15 +211,15 @@ function appendDeltaToCachedMessage(sessionId: string, messageId: string, delta:
       role: 'assistant',
       content: delta,
     });
-    messageCache.set(sessionId, existing);
+    setCachedMessages(sessionId, existing);
     return;
   }
   existing[idx] = { ...existing[idx], content: (existing[idx].content ?? '') + delta };
-  messageCache.set(sessionId, existing);
+  setCachedMessages(sessionId, existing);
 }
 
 function upsertCachedToolCall(sessionId: string, messageId: string, toolCall: ToolCall): void {
-  const existing = messageCache.get(sessionId) ?? [];
+  const existing = getCachedMessages(sessionId);
   const idx = existing.findIndex((m) => m.id === messageId);
   if (idx === -1) {
     existing.push({
@@ -220,7 +229,7 @@ function upsertCachedToolCall(sessionId: string, messageId: string, toolCall: To
       role: 'assistant',
       toolCalls: [toolCall],
     });
-    messageCache.set(sessionId, existing);
+    setCachedMessages(sessionId, existing);
     return;
   }
 
@@ -232,19 +241,19 @@ function upsertCachedToolCall(sessionId: string, messageId: string, toolCall: To
     : prevCalls.map((call, i) => (i === callIdx ? { ...call, ...toolCall } : call));
 
   existing[idx] = { ...existing[idx], toolCalls: nextCalls };
-  messageCache.set(sessionId, existing);
+  setCachedMessages(sessionId, existing);
 }
 
 function updateCachedMessageContent(sessionId: string, messageId: string, content: string): void {
-  const existing = messageCache.get(sessionId);
-  if (!existing) return;
+  const existing = getCachedMessages(sessionId);
+  if (existing.length === 0) return;
   const idx = existing.findIndex((m) => m.id === messageId);
   if (idx !== -1) {
     existing[idx] = {
       ...existing[idx],
       content: mergeMessageContent(existing[idx].content, content),
     };
-    messageCache.set(sessionId, existing);
+    setCachedMessages(sessionId, existing);
   }
 }
 
@@ -256,40 +265,40 @@ function findLastAssistantIndex(messages: Message[]): number {
 }
 
 function findLastAssistantMessageId(sessionId: string): string | undefined {
-  const cached = messageCache.get(sessionId);
-  if (!cached) return undefined;
+  const cached = getCachedMessages(sessionId);
+  if (cached.length === 0) return undefined;
   const idx = findLastAssistantIndex(cached);
   return idx === -1 ? undefined : cached[idx].id;
 }
 
 function updateCachedMessageReasoning(sessionId: string, messageId: string, reasoningContent: string): void {
-  const existing = messageCache.get(sessionId) ?? [];
+  const existing = getCachedMessages(sessionId);
   let idx = existing.findIndex((m) => m.id === messageId);
   if (idx === -1) idx = findLastAssistantIndex(existing);
   if (idx === -1) return;
   existing[idx] = { ...existing[idx], reasoningContent };
-  messageCache.set(sessionId, existing);
+  setCachedMessages(sessionId, existing);
 }
 
 function appendReasoningDelta(sessionId: string, messageId: string, delta: string): string {
-  const existing = messageCache.get(sessionId) ?? [];
+  const existing = getCachedMessages(sessionId);
   let idx = existing.findIndex((m) => m.id === messageId);
   if (idx === -1) idx = findLastAssistantIndex(existing);
   if (idx === -1) return delta;
   const next = `${existing[idx].reasoningContent ?? ''}${delta}`;
   existing[idx] = { ...existing[idx], reasoningContent: next };
-  messageCache.set(sessionId, existing);
+  setCachedMessages(sessionId, existing);
   return next;
 }
 
 function appendDeltaToLastAssistant(sessionId: string, delta: string): string | undefined {
-  const existing = messageCache.get(sessionId);
-  if (!existing) return undefined;
+  const existing = getCachedMessages(sessionId);
+  if (existing.length === 0) return undefined;
   const idx = findLastAssistantIndex(existing);
   if (idx === -1) return undefined;
   const messageId = existing[idx].id;
   existing[idx] = { ...existing[idx], content: (existing[idx].content ?? '') + delta };
-  messageCache.set(sessionId, existing);
+  setCachedMessages(sessionId, existing);
   return messageId;
 }
 
@@ -363,15 +372,16 @@ let patchThinkingActivityImpl: ThinkingActivityPatcher = () => {};
 let readMessageState: () => MessageState = () => ({} as MessageState);
 
 function clearModelWaitTimers(sessionId: string): void {
-  const timers = modelWaitTimers.get(sessionId);
+  const key = scopedSessionKey(sessionId);
+  const timers = modelWaitTimers.get(key);
   if (!timers) return;
   if (timers.slow) clearTimeout(timers.slow);
   if (timers.verySlow) clearTimeout(timers.verySlow);
-  modelWaitTimers.delete(sessionId);
+  modelWaitTimers.delete(key);
 }
 
 function resetTurnWaitState(sessionId: string): void {
-  turnFirstTokenSeen.delete(sessionId);
+  turnFirstTokenSeen.delete(scopedSessionKey(sessionId));
   clearModelWaitTimers(sessionId);
 }
 
@@ -384,22 +394,23 @@ function startModelWaitWatch(sessionId: string): void {
   const startedAt = Date.now();
   const slow = setTimeout(() => {
     if (!readMessageState().loadingBySession[sessionId]) return;
-    if (turnFirstTokenSeen.has(sessionId)) return;
+    if (turnFirstTokenSeen.has(scopedSessionKey(sessionId))) return;
     pipelineMark(sessionId, 'llm:wait.slow', { waitedMs: Date.now() - startedAt });
     patchThinkingActivity(sessionId, 'Thinking');
   }, MODEL_WAIT_SLOW_MS);
   const verySlow = setTimeout(() => {
     if (!readMessageState().loadingBySession[sessionId]) return;
-    if (turnFirstTokenSeen.has(sessionId)) return;
+    if (turnFirstTokenSeen.has(scopedSessionKey(sessionId))) return;
     pipelineMark(sessionId, 'llm:wait.very_slow', { waitedMs: Date.now() - startedAt });
     patchThinkingActivity(sessionId, 'Thinking');
   }, MODEL_WAIT_VERY_SLOW_MS);
-  modelWaitTimers.set(sessionId, { slow, verySlow, startedAt });
+  modelWaitTimers.set(scopedSessionKey(sessionId), { slow, verySlow, startedAt });
 }
 
 function markLlmFirstToken(sessionId: string): void {
-  if (turnFirstTokenSeen.has(sessionId)) return;
-  turnFirstTokenSeen.add(sessionId);
+  const key = scopedSessionKey(sessionId);
+  if (turnFirstTokenSeen.has(key)) return;
+  turnFirstTokenSeen.add(key);
   clearModelWaitTimers(sessionId);
   pipelineMark(sessionId, 'llm:first-token', {});
   patchThinkingActivity(sessionId, 'Thinking');
@@ -547,38 +558,40 @@ function syncActiveLoading(
 }
 
 function migrateOutgoingSessionState(fromId: string, toId: string): void {
-  const messages = messageCache.get(fromId);
+  const fromKey = scopedSessionKey(fromId);
+  const toKey = scopedSessionKey(toId);
+  const messages = messageCache.get(fromKey);
   if (messages) {
     messageCache.set(
-      toId,
+      toKey,
       messages.map((m) => ({ ...m, sessionID: toId, sessionId: toId })),
     );
-    messageCache.delete(fromId);
+    messageCache.delete(fromKey);
   }
 
-  const compactions = compactionCache.get(fromId);
+  const compactions = compactionCache.get(fromKey);
   if (compactions) {
     compactionCache.set(
-      toId,
+      toKey,
       compactions.map((c) => ({ ...c, sessionId: toId })),
     );
-    compactionCache.delete(fromId);
+    compactionCache.delete(fromKey);
   }
 
-  const pending = pendingDisplayBySession.get(fromId);
+  const pending = pendingDisplayBySession.get(fromKey);
   if (pending) {
-    pendingDisplayBySession.set(toId, pending);
-    pendingDisplayBySession.delete(fromId);
+    pendingDisplayBySession.set(toKey, pending);
+    pendingDisplayBySession.delete(fromKey);
   }
 
-  const timers = modelWaitTimers.get(fromId);
+  const timers = modelWaitTimers.get(fromKey);
   if (timers) {
-    modelWaitTimers.set(toId, timers);
-    modelWaitTimers.delete(fromId);
+    modelWaitTimers.set(toKey, timers);
+    modelWaitTimers.delete(fromKey);
   }
-  if (turnFirstTokenSeen.has(fromId)) {
-    turnFirstTokenSeen.delete(fromId);
-    turnFirstTokenSeen.add(toId);
+  if (turnFirstTokenSeen.has(fromKey)) {
+    turnFirstTokenSeen.delete(fromKey);
+    turnFirstTokenSeen.add(toKey);
   }
 
   const runStatus = useSessionStore.getState().sessionRunStatus[fromId];
@@ -628,7 +641,14 @@ interface MessageState {
     },
   ) => Promise<void>;
   abortSession: (sessionId: string) => Promise<void>;
+  applyRunStatusFromSessionStore: (sessionId: string, status: SessionRunStatus) => void;
+  applyCrossProjectActivityEvent: (
+    eventDirectory: string,
+    event: Record<string, unknown>,
+  ) => void;
   clearMessages: () => void;
+  clearProjectScope: () => void;
+  switchProjectScope: (projectPath: string) => void;
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
   subscribeToEvents: () => () => void;
@@ -812,7 +832,7 @@ export const useMessageStore = create<MessageState>((set, get) => {
         await opencodeMessage.fetchSessionMessages(sessionId);
       setCachedCompactions(sessionId, mergeLoadedCompactions(sessionId, serverCompactions));
       const serverById = new Map<string, Message>(serverMsgs.map((m) => [m.id, m]));
-      const currentCache = messageCache.get(sessionId) ?? [];
+      const currentCache = getCachedMessages(sessionId);
       for (const msg of currentCache) {
         if (isOptimisticUserMessage(msg)) {
           if (!serverById.has(msg.id)) {
@@ -951,10 +971,11 @@ export const useMessageStore = create<MessageState>((set, get) => {
 
   cancelOutgoingMessage: (sessionId: string) => {
     resetTurnWaitState(sessionId);
-    const queue = pendingDisplayBySession.get(sessionId);
+    const pendingKey = scopedSessionKey(sessionId);
+    const queue = pendingDisplayBySession.get(pendingKey);
     if (queue?.length) {
       queue.pop();
-      if (queue.length === 0) pendingDisplayBySession.delete(sessionId);
+      if (queue.length === 0) pendingDisplayBySession.delete(pendingKey);
     }
     const cleaned = withoutOptimisticUsers(getCachedMessages(sessionId));
     setCachedMessages(sessionId, cleaned);
@@ -1038,10 +1059,163 @@ export const useMessageStore = create<MessageState>((set, get) => {
   },
 
   clearMessages: () => set({ messages: [], compactionsBySession: {} }),
+
+  clearProjectScope: () => {
+    for (const key of modelWaitTimers.keys()) {
+      const timers = modelWaitTimers.get(key);
+      if (timers?.slow) clearTimeout(timers.slow);
+      if (timers?.verySlow) clearTimeout(timers.verySlow);
+    }
+    modelWaitTimers.clear();
+    turnFirstTokenSeen.clear();
+    messageCache.clear();
+    compactionCache.clear();
+    pendingDisplayBySession.clear();
+    activeReasoningParts.clear();
+    deltaFlushBuffer = [];
+    deltaFlushScheduled = false;
+    set({
+      activeSessionId: null,
+      messages: [],
+      compactionsBySession: {},
+      loading: false,
+      loadingBySession: {},
+      sessionActivity: {},
+      thinking: { active: false },
+      error: null,
+    });
+  },
+
+  switchProjectScope: (_projectPath: string) => {
+    const { activeSessionId, sessionRunStatus } = useSessionStore.getState();
+    const loadingBySession: Record<string, boolean> = {};
+    for (const [sessionId, status] of Object.entries(sessionRunStatus)) {
+      if (status === 'running') loadingBySession[sessionId] = true;
+    }
+    set({
+      activeSessionId,
+      messages: activeSessionId ? dedupeMessagesById(getCachedMessages(activeSessionId)) : [],
+      compactionsBySession: activeSessionId
+        ? { [activeSessionId]: getCachedCompactions(activeSessionId) }
+        : {},
+      loading: activeSessionId ? !!loadingBySession[activeSessionId] : false,
+      loadingBySession,
+      sessionActivity: {},
+      thinking: { active: false },
+      error: null,
+    });
+  },
+
+  applyRunStatusFromSessionStore: (sessionId, status) => {
+    set((state) => {
+      if (status === 'running') {
+        if (state.loadingBySession[sessionId]) return state;
+        const loadingBySession = { ...state.loadingBySession, [sessionId]: true };
+        return {
+          loadingBySession,
+          loading: syncActiveLoading(state.activeSessionId, loadingBySession),
+        };
+      }
+      if (status !== 'idle' && status !== 'error') return state;
+      if (!state.loadingBySession[sessionId]) return state;
+      const { [sessionId]: _removed, ...loadingBySession } = state.loadingBySession;
+      return {
+        loadingBySession,
+        loading: syncActiveLoading(state.activeSessionId, loadingBySession),
+      };
+    });
+  },
+
+  applyCrossProjectActivityEvent: (_eventDirectory, event) => {
+    const eventType = typeof event.type === 'string' ? event.type : '';
+    const props = extractEventPayload(event);
+    const sessionID = String(props.sessionID ?? props.sessionId ?? '');
+    if (!sessionID) return;
+
+    const toolName = String(props.name ?? get().sessionActivity[sessionID]?.toolName ?? 'tool');
+    const input = typeof props.input === 'string'
+      ? props.input
+      : props.input
+        ? JSON.stringify(props.input, null, 2)
+        : undefined;
+
+    if (eventType === EventType.SESSION_NEXT_TOOL_INPUT_STARTED) {
+      const { label, detail } = formatToolActivityLabel(toolName, input);
+      get().setSessionActivity(sessionID, {
+        sessionId: sessionID,
+        kind: 'tool-input',
+        label,
+        toolName,
+        detail,
+      });
+      useSessionStore.getState().applyCrossProjectSessionEvent(_eventDirectory, {
+        type: EventType.SESSION_STATUS,
+        properties: { sessionID, sessionId: sessionID, status: { type: 'busy' } },
+      });
+      return;
+    }
+
+    if (
+      eventType === EventType.SESSION_NEXT_TOOL_CALLED
+      || eventType === EventType.SESSION_NEXT_TOOL_PROGRESS
+    ) {
+      const content = Array.isArray(props.content)
+        ? props.content
+            .map((item) => {
+              const row = item as Record<string, unknown>;
+              return typeof row.text === 'string' ? row.text : '';
+            })
+            .filter(Boolean)
+            .join('\n')
+            .trim()
+        : '';
+      const { label, detail: parsedDetail } = formatToolActivityLabel(toolName, input);
+      get().setSessionActivity(sessionID, {
+        sessionId: sessionID,
+        kind: 'tool-running',
+        label,
+        toolName,
+        detail: content.slice(0, 200) || parsedDetail,
+      });
+      useSessionStore.getState().applyCrossProjectSessionEvent(_eventDirectory, {
+        type: EventType.SESSION_STATUS,
+        properties: { sessionID, sessionId: sessionID, status: { type: 'busy' } },
+      });
+      return;
+    }
+
+    if (eventType === EventType.SESSION_NEXT_TOOL_SUCCESS) {
+      const { label } = formatToolActivityLabel(toolName);
+      get().setSessionActivity(sessionID, {
+        sessionId: sessionID,
+        kind: 'tool-running',
+        label: `${label}完成`,
+        toolName,
+      });
+      return;
+    }
+
+    if (eventType === EventType.SESSION_NEXT_TOOL_FAILED) {
+      const error = typeof props.error === 'string' ? props.error : undefined;
+      const { label } = formatToolActivityLabel(toolName);
+      get().setSessionActivity(sessionID, {
+        sessionId: sessionID,
+        kind: 'tool-running',
+        label: `${label}失败`,
+        toolName,
+        detail: error,
+      });
+    }
+  },
+
   setLoading: (loading) => set({ loading }),
   setError: (error) => set({ error }),
 
   subscribeToEvents: () => {
+    const unregisterCrossProject = registerCrossProjectEventHandler((eventDirectory, event) => {
+      get().applyCrossProjectActivityEvent(eventDirectory, event);
+    });
+
     const unsubscribers: Array<() => void> = [];
 
     deltaFlushApplyFn = (pending) => {
@@ -1164,14 +1338,14 @@ export const useMessageStore = create<MessageState>((set, get) => {
         }
 
         if (role === 'assistant' && sessionID && id) {
-          const cached = messageCache.get(sessionID) ?? [];
+          const cached = getCachedMessages(sessionID);
           if (!cached.some((m) => m.id === id)) {
             pipelineMark(sessionID, 'assistant:new', {
               messageId: id.slice(0, 16),
               agent: info.agent,
               modelID: info.modelID,
             });
-            if (!turnFirstTokenSeen.has(sessionID)) {
+            if (!turnFirstTokenSeen.has(scopedSessionKey(sessionID))) {
               patchThinkingActivity(sessionID, 'Thinking');
             }
           }
@@ -1236,9 +1410,9 @@ export const useMessageStore = create<MessageState>((set, get) => {
         if (!messageID) return;
 
         if (sessionID) {
-          const cached = messageCache.get(sessionID);
-          if (cached) {
-            messageCache.set(sessionID, cached.filter((m) => m.id !== messageID));
+          const cached = getCachedMessages(sessionID);
+          if (cached.length > 0) {
+            setCachedMessages(sessionID, cached.filter((m) => m.id !== messageID));
           }
         }
 
@@ -1673,15 +1847,15 @@ export const useMessageStore = create<MessageState>((set, get) => {
         if (!sessionID || !text) return;
 
         flushDeltaBufferSync();
-        const cached = messageCache.get(sessionID);
-        if (cached) {
+        const cached = [...getCachedMessages(sessionID)];
+        if (cached.length > 0) {
           const idx = findLastAssistantIndex(cached);
           if (idx !== -1) {
             cached[idx] = {
               ...cached[idx],
               content: mergeMessageContent(cached[idx].content, text),
             };
-            messageCache.set(sessionID, cached);
+            setCachedMessages(sessionID, cached);
           }
         }
 
@@ -2086,6 +2260,7 @@ export const useMessageStore = create<MessageState>((set, get) => {
     );
 
     return () => {
+      unregisterCrossProject();
       flushDeltaBufferSync();
       unsubscribers.forEach((unsub) => unsub());
       deltaFlushBuffer = [];
@@ -2094,4 +2269,8 @@ export const useMessageStore = create<MessageState>((set, get) => {
     };
   },
 };
+});
+
+setSessionRunStatusSyncHandler((sessionId, status) => {
+  useMessageStore.getState().applyRunStatusFromSessionStore(sessionId, status);
 });

@@ -7,6 +7,28 @@
 @import 'highlight.js/styles/github.min.css';
 @import "tailwindcss";
 
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+html {
+  background-color: #F5F5F5;
+}
+
+html.dark {
+  background-color: #1A1A1A;
+}
+
+body {
+  background-color: inherit;
+}
+
+#root {
+  min-height: 100vh;
+}
+
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {

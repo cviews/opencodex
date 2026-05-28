@@ -41,6 +41,43 @@ function getAugmentedPath(): string {
   return [...new Set(parts)].join(path.delimiter);
 }
 
+const VSCODE_APP_PATHS = [
+  '/Applications/Visual Studio Code.app',
+  path.join(os.homedir(), 'Applications/Visual Studio Code.app'),
+];
+
+function getVscodeCodeBinary(): string | null {
+  for (const appPath of VSCODE_APP_PATHS) {
+    const bundledCode = path.join(appPath, 'Contents/Resources/app/bin/code');
+    if (fs.existsSync(bundledCode)) return bundledCode;
+  }
+
+  const vscodeBinDirs = VSCODE_APP_PATHS.map((appPath) =>
+    path.join(appPath, 'Contents/Resources/app/bin'),
+  );
+  const searchPath = [...vscodeBinDirs, ...getAugmentedPath().split(path.delimiter)]
+    .filter(Boolean)
+    .join(path.delimiter);
+
+  try {
+    const found = execSync('command -v code', {
+      encoding: 'utf-8',
+      env: { ...process.env, PATH: searchPath },
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (found) return found;
+  } catch {
+    /* ignore */
+  }
+
+  return null;
+}
+
+function isVscodeInstalled(): boolean {
+  if (getVscodeCodeBinary()) return true;
+  return VSCODE_APP_PATHS.some((appPath) => fs.existsSync(appPath));
+}
+
 function resolveOpencodeBinary(): string {
   const augmentedPath = getAugmentedPath();
   try {
@@ -750,10 +787,7 @@ function setupIpc(): void {
       return { vscode: false, finder: false, terminal: false, platform: 'windows' };
     }
     try {
-      const hasVscode = (() => {
-        try { execSync('which code', { stdio: 'pipe' }); return true; } catch { return false; }
-      })();
-      return { vscode: hasVscode, finder: true, terminal: true, platform: 'darwin' };
+      return { vscode: isVscodeInstalled(), finder: true, terminal: true, platform: 'darwin' };
     } catch {
       return { vscode: false, finder: true, terminal: true, platform: 'darwin' };
     }
@@ -776,10 +810,17 @@ function setupIpc(): void {
       let cmd: string;
       let args: string[] = [];
       switch (editor) {
-        case 'vscode':
-          cmd = 'code';
-          args = [filePath];
+        case 'vscode': {
+          const codeBinary = getVscodeCodeBinary();
+          if (codeBinary) {
+            cmd = codeBinary;
+            args = [filePath];
+          } else {
+            cmd = 'open';
+            args = ['-a', 'Visual Studio Code', filePath];
+          }
           break;
+        }
         case 'finder':
           cmd = 'open';
           args = ['-R', filePath];
@@ -1014,6 +1055,23 @@ function resolveAppIconPath(): string | undefined {
   return undefined;
 }
 
+function loadRendererDevUrl(window: BrowserWindow, attempt = 0): void {
+  const maxAttempts = 60;
+
+  window.webContents.once('did-fail-load', (_event, errorCode, _errorDescription, validatedURL) => {
+    if (window.isDestroyed() || validatedURL !== VITE_DEV_URL) return;
+    if (errorCode === -3) return;
+    if (attempt + 1 >= maxAttempts) {
+      console.error('[zmn-opencodex] Gave up loading Vite dev URL. Run pnpm dev from the repo root.');
+      return;
+    }
+    console.warn(`[zmn-opencodex] Vite not ready (attempt ${attempt + 1}/${maxAttempts}), retrying...`);
+    setTimeout(() => loadRendererDevUrl(window, attempt + 1), 1000);
+  });
+
+  void window.loadURL(VITE_DEV_URL);
+}
+
 function createWindow(): void {
   const iconPath = resolveAppIconPath();
   mainWindow = new BrowserWindow({
@@ -1022,7 +1080,7 @@ function createWindow(): void {
     minWidth: 800,
     minHeight: 600,
     titleBarStyle: 'hiddenInset',
-    backgroundColor: '#202123',
+    backgroundColor: '#F5F5F5',
     ...(iconPath ? { icon: iconPath } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -1034,7 +1092,7 @@ function createWindow(): void {
 
   // Load renderer
   if (process.env.NODE_ENV === 'development') {
-    mainWindow.loadURL(VITE_DEV_URL);
+    loadRendererDevUrl(mainWindow);
     mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));

@@ -52,7 +52,9 @@ export function pickQuestionForSessionTree(
       const matched = questions.find((q) => q.sessionId === sessionId);
       if (matched) return matched;
     }
+    // Do not leak another session's question into the current view.
+    return null;
   }
 
-  return questions[0];
+  return null;
 }

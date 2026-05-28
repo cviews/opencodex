@@ -54,6 +54,7 @@ import { useSessionContext } from '../hooks/useSessionContext';
 
 import { opencodeSlash, opencodePermission, opencodeEngine, opencodeSession, buildTeamLaunchPrompt, opencodeProvider, opencodeTeam } from '../services/opencodeAdapter';
 import { getCachedTeamBySession } from '../services/teamSessionCache';
+import { resetProjectScope } from '../services/projectScopeReset';
 import { debugError, debugLog, debugWarn } from '../utils/debugLog';
 import { deferAfterNativeDialog } from '../utils/deferAfterNativeDialog';
 import { pipelineMark, pipelineReset } from '../utils/pipelineTiming';
@@ -618,8 +619,9 @@ export function Composer({
 
       addProject(newProject);
       setProject(newProject);
+      resetProjectScope(newProject.path);
       useSessionStore.getState().setActiveSession(null);
-      opencodeSession.createSession(newProject.path);
+      useMessageStore.getState().setActiveSession(null);
       setRestarting(false);
     } finally {
       setPickingFolder(false);
@@ -631,6 +633,9 @@ export function Composer({
     setRestarting(true);
     setRestartError(null);
 
+    resetProjectScope(project.path);
+    setProject(project);
+
     const { url, error } = await restartWithDir(project.path);
     if (!url) {
       setRestarting(false);
@@ -638,8 +643,6 @@ export function Composer({
       return;
     }
 
-    setProject(project);
-    useSessionStore.getState().setActiveSession(null);
     setRestarting(false);
   }, [restartWithDir, setProject]);
 

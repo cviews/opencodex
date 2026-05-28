@@ -2,9 +2,18 @@ import { create } from 'zustand';
 import type { PendingPermission, PendingQuestion } from '../types';
 import { opencodePermission, opencodeQuestion } from '../services/opencodeAdapter';
 import { normalizePermissionRequest, normalizeQuestionRequest, type PermissionMode } from '../services/permissionNormalize';
-import { on, EventType, extractEventPayload } from '../sdk/eventRouter';
+import { on, EventType, extractEventPayload, registerCrossProjectEventHandler } from '../sdk/eventRouter';
+import { resolveProjectDirectoryKey } from '../sdk/eventDirectory';
+import {
+  emptyDirectoryPendingSnapshot,
+  removeDirectoryPermission,
+  removeDirectoryQuestion,
+  upsertDirectoryPermission,
+  upsertDirectoryQuestion,
+  type DirectoryPendingSnapshot,
+} from '../services/crossProjectPending';
 import { useProjectStore } from './project';
-import { useMessageStore } from './message';
+import { useMessageStore, type SessionActivity } from './message';
 import { useTeamStore } from './team';
 import { pipelineMark, debugWarn } from '../utils/debugLog';
 import { questionLog, questionWarn } from '../utils/questionDebug';
@@ -14,6 +23,10 @@ const RECOVER_POLL_MS = 1000;
 const RECOVER_INITIAL_DELAY_MS = 5000;
 const RECOVER_MAX_MS = 180_000;
 const recoveringQuestionSessions = new Set<string>();
+
+export function clearQuestionRecoverSessions(): void {
+  recoveringQuestionSessions.clear();
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -131,6 +144,7 @@ function permissionIdFromReply(props: Record<string, unknown>): string | undefin
 interface PermissionState {
   pendingPermissions: PendingPermission[];
   pendingQuestions: PendingQuestion[];
+  pendingByDirectory: Record<string, DirectoryPendingSnapshot>;
   permissionMode: PermissionMode;
   loading: boolean;
   error: string | null;
@@ -145,13 +159,35 @@ interface PermissionState {
   setError: (error: string | null) => void;
   fetchPendingPermissions: () => Promise<void>;
   fetchPendingQuestions: (options?: { merge?: boolean; quiet?: boolean }) => Promise<void>;
+  fetchPendingForDirectory: (projectPath: string) => Promise<void>;
   fetchPermissionMode: () => Promise<void>;
+  applyCrossProjectPermissionEvent: (
+    eventDirectory: string,
+    event: Record<string, unknown>,
+  ) => void;
   subscribeToEvents: () => () => void;
+}
+
+function permissionActivityForSession(sessionID: string, perm: PendingPermission): SessionActivity {
+  const teamLabels: Record<string, string> = {
+    team_spawn: '需要批准：创建团队成员',
+    team_create: '需要批准：创建团队',
+    team_message: '需要批准：发送团队消息',
+    team_broadcast: '需要批准：广播团队消息',
+  };
+  return {
+    sessionId: sessionID,
+    kind: 'permission',
+    label: teamLabels[perm.kind] ?? `需要批准：${perm.title}`,
+    toolName: perm.kind,
+    detail: perm.message,
+  };
 }
 
 export const usePermissionStore = create<PermissionState>((set, get) => ({
   pendingPermissions: [],
   pendingQuestions: [],
+  pendingByDirectory: {},
   permissionMode: 'default',
   loading: false,
   error: null,
@@ -305,7 +341,126 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
     }
   },
 
+  fetchPendingForDirectory: async (projectPath) => {
+    const path = projectPath.trim();
+    if (!path) return;
+    try {
+      const [permissions, questions] = await Promise.all([
+        opencodePermission.fetchPendingPermissions(path),
+        opencodeQuestion.fetchPendingQuestions(path, { quiet: true }),
+      ]);
+      const key = resolveProjectDirectoryKey(path, get().pendingByDirectory);
+      set((state) => ({
+        pendingByDirectory: {
+          ...state.pendingByDirectory,
+          [key]: { permissions, questions },
+        },
+      }));
+    } catch (e) {
+      questionWarn('store.fetch.directory.error', {
+        directory: path,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
+
+  applyCrossProjectPermissionEvent: (eventDirectory, event) => {
+    const eventType = typeof event.type === 'string' ? event.type : '';
+    const props = extractEventPayload(event);
+    const key = resolveProjectDirectoryKey(eventDirectory, get().pendingByDirectory);
+
+    if (eventType === EventType.PERMISSION_ASKED || eventType === EventType.PERMISSION_UPDATED) {
+      const perm = normalizePermissionRequest(props);
+      if (!perm?.id) return;
+      set((state) => {
+        const previous = state.pendingByDirectory[key] ?? emptyDirectoryPendingSnapshot();
+        return {
+          pendingByDirectory: {
+            ...state.pendingByDirectory,
+            [key]: upsertDirectoryPermission(previous, perm),
+          },
+        };
+      });
+      const sessionID = perm.sessionId ?? String(props.sessionID ?? props.sessionId ?? '');
+      if (sessionID) {
+        useMessageStore.getState().setSessionActivity(sessionID, permissionActivityForSession(sessionID, perm));
+      }
+      return;
+    }
+
+    if (eventType === EventType.PERMISSION_REPLIED) {
+      const requestID = permissionIdFromReply(props);
+      if (!requestID) return;
+      set((state) => {
+        const previous = state.pendingByDirectory[key] ?? emptyDirectoryPendingSnapshot();
+        return {
+          pendingByDirectory: {
+            ...state.pendingByDirectory,
+            [key]: removeDirectoryPermission(previous, requestID),
+          },
+        };
+      });
+      const sessionID = String(props.sessionID ?? props.sessionId ?? '');
+      if (sessionID) {
+        const activity = useMessageStore.getState().sessionActivity[sessionID];
+        if (activity?.kind === 'permission') {
+          useMessageStore.getState().setSessionActivity(sessionID, null);
+        }
+      }
+      return;
+    }
+
+    if (eventType === EventType.QUESTION_ASKED) {
+      const question = normalizeQuestionRequest(props);
+      if (!question?.id) return;
+      set((state) => {
+        const previous = state.pendingByDirectory[key] ?? emptyDirectoryPendingSnapshot();
+        return {
+          pendingByDirectory: {
+            ...state.pendingByDirectory,
+            [key]: upsertDirectoryQuestion(previous, question),
+          },
+        };
+      });
+      const sessionID = question.sessionId ?? String(props.sessionID ?? props.sessionId ?? '');
+      if (sessionID) {
+        useMessageStore.getState().setSessionActivity(sessionID, {
+          sessionId: sessionID,
+          kind: 'question',
+          label: question.title,
+          detail: question.options[0]?.label ?? undefined,
+        });
+      }
+      return;
+    }
+
+    if (eventType === EventType.QUESTION_REPLIED || eventType === EventType.QUESTION_REJECTED) {
+      const requestID = typeof props.requestID === 'string' ? props.requestID : undefined;
+      if (!requestID) return;
+      set((state) => {
+        const previous = state.pendingByDirectory[key] ?? emptyDirectoryPendingSnapshot();
+        return {
+          pendingByDirectory: {
+            ...state.pendingByDirectory,
+            [key]: removeDirectoryQuestion(previous, requestID),
+          },
+        };
+      });
+      const sessionID = String(props.sessionID ?? props.sessionId ?? '');
+      if (sessionID) {
+        const activity = useMessageStore.getState().sessionActivity[sessionID];
+        if (activity?.kind === 'question') {
+          useMessageStore.getState().setSessionActivity(sessionID, null);
+        }
+      }
+    }
+  },
+
   subscribeToEvents: () => {
+    const unregisterCrossProject = registerCrossProjectEventHandler((eventDirectory, event) => {
+      get().applyCrossProjectPermissionEvent(eventDirectory, event);
+    });
+
     const unsubscribers: Array<() => void> = [];
 
     const handlePermissionAsked = (event: Record<string, unknown>) => {
@@ -325,19 +480,7 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
       }
       get().addPermission(perm);
       if (sessionID) {
-        const teamLabels: Record<string, string> = {
-          team_spawn: '需要批准：创建团队成员',
-          team_create: '需要批准：创建团队',
-          team_message: '需要批准：发送团队消息',
-          team_broadcast: '需要批准：广播团队消息',
-        };
-        useMessageStore.getState().setSessionActivity(sessionID, {
-          sessionId: sessionID,
-          kind: 'permission',
-          label: teamLabels[perm.kind] ?? `需要批准：${perm.title}`,
-          toolName: perm.kind,
-          detail: perm.message,
-        });
+        useMessageStore.getState().setSessionActivity(sessionID, permissionActivityForSession(sessionID, perm));
       }
     };
 
@@ -450,6 +593,7 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
     );
 
     return () => {
+      unregisterCrossProject();
       unsubscribers.forEach((unsub) => unsub());
     };
   },

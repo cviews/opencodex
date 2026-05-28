@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { TeamInfo, TeamEvent, TeamMember, TeamTask } from '../types';
 import { invalidateTeamListCache, invalidateTeamBySessionCache, opencodeTeam } from '../services/opencodeAdapter';
+import { registerCrossProjectEventHandler, extractEventPayload } from '../sdk/eventRouter';
 import { scheduleTeamMemberExecution } from '../services/teamMemberExecution';
 import { getCachedTeamBySession } from '../services/teamSessionCache';
 import {
@@ -467,9 +468,26 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   },
 
   subscribeToEvents: () => {
-    return opencodeTeam.onTeamEvent((event) => {
+    const unregisterCrossProject = registerCrossProjectEventHandler((_eventDirectory, event) => {
+      const eventType = typeof event.type === 'string' ? event.type : '';
+      if (!eventType.startsWith('team.')) return;
+      const props = extractEventPayload(event);
+      useTeamStore.getState().handleTeamEvent({
+        type: eventType as TeamEvent['type'],
+        teamId: String(props.teamName ?? props.teamId ?? props.teamID ?? ''),
+        data: props,
+        timestamp: typeof event.timestamp === 'number' ? event.timestamp : Date.now(),
+      });
+    });
+
+    const unregisterTeamEvents = opencodeTeam.onTeamEvent((event) => {
       useTeamStore.getState().handleTeamEvent(event);
     });
+
+    return () => {
+      unregisterCrossProject();
+      unregisterTeamEvents();
+    };
   },
 }));
 

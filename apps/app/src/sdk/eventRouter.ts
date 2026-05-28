@@ -9,6 +9,57 @@ type EventHandler = (event: Record<string, unknown>) => void;
 
 const handlers: Map<string, Set<EventHandler>> = new Map();
 
+type CrossProjectEventHandler = (
+  eventDirectory: string,
+  event: Record<string, unknown>,
+) => void;
+
+const crossProjectHandlers = new Set<CrossProjectEventHandler>();
+
+/** Register a handler for SSE events whose directory differs from the active project. */
+export function registerCrossProjectEventHandler(handler: CrossProjectEventHandler): () => void {
+  crossProjectHandlers.add(handler);
+  return () => crossProjectHandlers.delete(handler);
+}
+
+/** @deprecated Use registerCrossProjectEventHandler instead. */
+export function setCrossProjectSessionEventHandler(handler: CrossProjectEventHandler | null): void {
+  crossProjectHandlers.clear();
+  if (handler) crossProjectHandlers.add(handler);
+}
+
+function dispatchCrossProjectEvent(eventDirectory: string, event: Record<string, unknown>): void {
+  for (const handler of crossProjectHandlers) {
+    try {
+      handler(eventDirectory, event);
+    } catch (e) {
+      debugError('eventRouter.crossProject', e);
+    }
+  }
+}
+
+function isCrossProjectForwardedEvent(eventType: string | undefined): boolean {
+  if (!eventType) return false;
+  if (
+    eventType === 'session.status'
+    || eventType === 'session.idle'
+    || eventType === 'session.error'
+  ) {
+    return true;
+  }
+  if (
+    eventType === 'permission.asked'
+    || eventType === 'permission.updated'
+    || eventType === 'permission.replied'
+  ) {
+    return true;
+  }
+  if (eventType.startsWith('question.')) return true;
+  if (eventType.startsWith('team.')) return true;
+  if (eventType.startsWith('session.next.tool.')) return true;
+  return false;
+}
+
 function getOrCreateHandlers(eventType: string): Set<EventHandler> {
   let set = handlers.get(eventType);
   if (!set) {
@@ -77,8 +128,15 @@ function handleSseData(raw: Record<string, unknown>) {
   const resolved = unwrapEvent(raw);
   const eventType = typeof resolved.type === 'string' ? resolved.type : undefined;
 
-  if (!eventDirectoryMatchesProject(eventDirectory)) {
-    if (eventType?.startsWith('question.') || eventType === 'permission.asked') {
+  if (!eventDirectory) {
+    const GLOBAL_WITHOUT_DIRECTORY = new Set(['server.connected', 'server.heartbeat']);
+    if (!eventType || !GLOBAL_WITHOUT_DIRECTORY.has(eventType)) {
+      return;
+    }
+  } else if (!eventDirectoryMatchesProject(eventDirectory)) {
+    if (eventType && isCrossProjectForwardedEvent(eventType)) {
+      dispatchCrossProjectEvent(eventDirectory, resolved);
+    } else if (eventType?.startsWith('question.') || eventType === 'permission.asked') {
       questionWarn('sse-dropped', {
         eventType,
         eventDirectory: eventDirectory ?? '(none)',

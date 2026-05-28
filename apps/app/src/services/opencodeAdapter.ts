@@ -939,7 +939,7 @@ function mergeCatalogEntries(primary: SlashItem[], secondary: SlashItem[]): Slas
 /**
  * Read project + global skills/commands from `.opencode` on disk.
  * Project: `{catalogDir}/.opencode/{skills,commands}`
- * Global: `~/.opencode/{skills,commands}`
+ * Global skills: `~/.config/opencode/skills`; global commands: `~/.opencode/{commands,command}`
  */
 async function buildSlashCatalogFromDisk(projectPath: string): Promise<SlashItem[]> {
   const electronApi = getElectronConfigApi();
@@ -1032,7 +1032,7 @@ async function buildSlashCatalogFromDisk(projectPath: string): Promise<SlashItem
     }
   }
 
-  await readSkillDir('~/.opencode/skills', 'global');
+  await readSkillDir('~/.config/opencode/skills', 'global');
   for (const subdir of ['commands', 'command'] as const) {
     await readCommandDir(`~/.opencode/${subdir}`, 'global');
   }
@@ -1056,7 +1056,7 @@ function mergeSkillRecords(api: CatalogSkillRecord[], disk: CatalogSkillRecord[]
   return [...map.values()];
 }
 
-/** Read SKILL.md from project + ~/.opencode for the skills sidebar (includes full body). */
+/** Read SKILL.md from project + ~/.config/opencode/skills for the skills sidebar (includes full body). */
 async function readSkillRecordsFromDisk(projectPath: string): Promise<CatalogSkillRecord[]> {
   const electronApi = getElectronConfigApi();
   if (!electronApi?.configListFiles || !electronApi.configReadTextFile || !electronApi.configFileExists) {
@@ -1110,7 +1110,7 @@ async function readSkillRecordsFromDisk(projectPath: string): Promise<CatalogSki
   if (catalogDirectory) {
     await readSkillDir(`${catalogDirectory}/.opencode/skills`, 'project');
   }
-  await readSkillDir('~/.opencode/skills', 'global');
+  await readSkillDir('~/.config/opencode/skills', 'global');
 
   return records;
 }
@@ -1743,9 +1743,30 @@ export const opencodeSession = {
     }, MOCK_SESSIONS as unknown as Session[]);
   },
 
-  createSession: async (_cwd?: string): Promise<Session | null> => {
+  fetchSessionRunStatus: async (
+    directory?: string,
+  ): Promise<Record<string, 'idle' | 'running' | 'error'>> => {
     return sdkCall(async () => {
-      const resp = await getClient()!.session.create({});
+      const resp = await getClient()!.session.status({ directory });
+      const statuses = resp.data ?? {};
+      const result: Record<string, 'idle' | 'running' | 'error'> = {};
+      for (const [sessionId, status] of Object.entries(statuses)) {
+        if (!sessionId || !status || typeof status !== 'object') continue;
+        const type = (status as { type?: string }).type;
+        if (type === 'busy' || type === 'retry') {
+          result[sessionId] = 'running';
+        } else if (type === 'idle') {
+          result[sessionId] = 'idle';
+        }
+      }
+      return result;
+    }, {});
+  },
+
+  createSession: async (directory?: string): Promise<Session | null> => {
+    return sdkCall(async () => {
+      const dir = directory?.trim() || useProjectStore.getState().currentProject.path?.trim();
+      const resp = await getClient()!.session.create(dir ? { directory: dir } : {});
       return transformSDKSession(resp.data as Record<string, unknown>);
     }, null);
   },
@@ -1896,7 +1917,7 @@ export const opencodeSkills = {
     }, [...MOCK_PROJECT_SKILLS, ...MOCK_GLOBAL_SKILLS]);
   },
 
-  /** Re-read ~/.opencode/skills from disk and refresh OpenCode skill list. */
+  /** Re-read ~/.config/opencode/skills from disk and refresh OpenCode skill list. */
   refreshAllSkills: async (): Promise<Skill[]> => {
     void refreshSlashCatalog();
     return (await fetchAllSkillRecords()) as Skill[];

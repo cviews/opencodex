@@ -8,17 +8,11 @@ import { usePermissionStore } from '../stores/permission';
 import { useAgentStore } from '../stores/agent';
 import { useTeamStore } from '../stores/team';
 import { isPendingSessionId } from '../utils/pendingSession';
-import { useSettingsStore } from '../stores/settings';
 import { useProjectStore } from '../stores/project';
 import { opencodeAgent, opencodeTeam } from '../services/opencodeAdapter';
+import { projectScopeKey, scheduleProjectSessionResync } from '../services/projectScopeReset';
 
 type AppState = 'connecting' | 'health-check' | 'initializing' | 'ready' | 'error';
-
-function useIsDark() {
-  const theme = useSettingsStore((s) => s.theme);
-  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-  return theme === 'dark' || (theme === 'system' && prefersDark);
-}
 
 const LIGHT_STYLE: React.CSSProperties = {
   display: 'flex',
@@ -111,6 +105,39 @@ function ErrorScreen({ message, onRetry, isDark }: { message: string; onRetry: (
   );
 }
 
+function BootstrapOverlay({
+  appState,
+  errorMessage,
+  onRetry,
+}: {
+  appState: AppState;
+  errorMessage: string;
+  onRetry: () => void;
+}) {
+  if (appState === 'ready') return null;
+
+  if (appState === 'error') {
+    return (
+      <div className="fixed inset-0 z-[300] flex items-center justify-center bg-[#F5F5F5]/95 dark:bg-[#1A1A1A]/95">
+        <ErrorScreen message={errorMessage} onRetry={onRetry} isDark={false} />
+      </div>
+    );
+  }
+
+  const text =
+    appState === 'health-check'
+      ? '正在检查后端服务...'
+      : appState === 'initializing'
+        ? '正在加载初始数据...'
+        : '正在连接 OpenCode 服务...';
+
+  return (
+    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-[#F5F5F5]/90 dark:bg-[#1A1A1A]/90">
+      <Spinner text={text} isDark={false} />
+    </div>
+  );
+}
+
 function ProjectSwitchToast({ text }: { text: string }) {
   return (
     <div className="pointer-events-none fixed left-1/2 top-4 z-[200] -translate-x-1/2">
@@ -130,11 +157,11 @@ async function runBackgroundInit(
     fetches.push(useMessageStore.getState().loadMessages(activeSessionId));
   }
   await Promise.allSettled(fetches);
+  scheduleProjectSessionResync();
 }
 
 export function SDKEventSubscriber({ children }: { children: React.ReactNode }) {
   const { connected, reconnecting, serverUrl, error: sdkError, reconnect, restartWithDir } = useSDK();
-  const isDark = useIsDark();
   const hasProject = useProjectStore((s) => s.hasProject);
   const currentProject = useProjectStore((s) => s.currentProject);
   const subscribeSessionEvents = useSessionStore((s) => s.subscribeToEvents);
@@ -284,6 +311,7 @@ export function SDKEventSubscriber({ children }: { children: React.ReactNode }) 
       } else {
         hasInitializedRef.current = true;
         setAppState('ready');
+        scheduleProjectSessionResync();
       }
     };
 
@@ -334,24 +362,21 @@ export function SDKEventSubscriber({ children }: { children: React.ReactNode }) 
   const showSoftToast = hasInitializedRef.current && (reconnecting || appState === 'health-check' || appState === 'initializing');
 
   if (hasInitializedRef.current) {
+    const scopeKey = projectScopeKey(serverUrl, currentProject.path);
     return (
       <>
-        {children}
+        <div key={scopeKey} className="contents">
+          {children}
+        </div>
         {showSoftToast && <ProjectSwitchToast text="正在切换项目..." />}
       </>
     );
   }
 
-  switch (appState) {
-    case 'connecting':
-      return <Spinner text="正在连接 OpenCode 服务..." isDark={isDark} />;
-    case 'health-check':
-      return <Spinner text="正在检查后端服务..." isDark={isDark} />;
-    case 'initializing':
-      return <Spinner text="正在加载初始数据..." isDark={isDark} />;
-    case 'error':
-      return <ErrorScreen message={errorMessage} onRetry={handleRetry} isDark={isDark} />;
-    case 'ready':
-      return <>{children}</>;
-  }
+  return (
+    <>
+      {children}
+      <BootstrapOverlay appState={appState} errorMessage={errorMessage} onRetry={handleRetry} />
+    </>
+  );
 }

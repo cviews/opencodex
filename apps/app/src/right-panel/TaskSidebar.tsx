@@ -58,7 +58,7 @@ export function TaskSidebar() {
     setCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const { activeSessionId, subAgents, selectedSubAgentId, fetchSubAgents, sessions } = useSessionStore();
+  const { activeSessionId, subAgents, selectedSubAgentId, fetchSubAgents, sessions, sessionRunStatus } = useSessionStore();
   const sessionActivity = useMessageStore((s) => s.sessionActivity);
   const { currentTeam, setCurrentTeamBySession, teamModeEnabled, selectedMemberId, setActiveTeams } = useTeamStore();
 
@@ -154,9 +154,9 @@ export function TaskSidebar() {
   const sessionPlan = activeSessionId ? sessionPlans[activeSessionId] : null;
   const displayMembers = useMemo(
     () => (currentTeam && activeSessionId
-      ? resolveTeamMembersForDisplay(currentTeam, subAgents, activeSessionId)
+      ? resolveTeamMembersForDisplay(currentTeam, subAgents, activeSessionId, sessionRunStatus)
       : []),
-    [currentTeam, subAgents, activeSessionId],
+    [currentTeam, subAgents, activeSessionId, sessionRunStatus],
   );
 
   const taskSubAgents = useMemo(

@@ -1,5 +1,7 @@
 import type { SessionActivity } from '../stores/message';
 import type { PendingPermission, PendingQuestion } from '../types';
+import { resolveProjectDirectoryKey } from '../sdk/eventDirectory';
+import type { DirectoryPendingSnapshot } from '../services/crossProjectPending';
 
 export function buildSessionsNeedingUserAction(
   pendingPermissions: PendingPermission[],
@@ -19,4 +21,25 @@ export function buildSessionsNeedingUserAction(
   }
 
   return ids;
+}
+
+export function buildSessionsNeedingUserActionForProject(
+  projectPath: string,
+  isCurrentProject: boolean,
+  pendingPermissions: PendingPermission[],
+  pendingQuestions: PendingQuestion[],
+  pendingByDirectory: Record<string, DirectoryPendingSnapshot>,
+  sessionActivity: Record<string, SessionActivity>,
+): Set<string> {
+  if (isCurrentProject) {
+    return buildSessionsNeedingUserAction(pendingPermissions, pendingQuestions, sessionActivity);
+  }
+
+  const key = resolveProjectDirectoryKey(projectPath, pendingByDirectory);
+  const snapshot = pendingByDirectory[key];
+  return buildSessionsNeedingUserAction(
+    snapshot?.permissions ?? [],
+    snapshot?.questions ?? [],
+    sessionActivity,
+  );
 }

@@ -49,7 +49,7 @@ export function isPathUnder(child: string, parent: string): boolean {
   return normalizedChild.startsWith(`${normalizedParent}/`);
 }
 
-/** Known global skill roots (home config, not tied to a workspace repo). */
+/** Known global skill roots (official config dir, not tied to a workspace repo). */
 export function isGlobalSkillLocation(location: string, ctx: SkillPathContext): boolean {
   if (!location || location.includes('<')) return true;
 
@@ -59,7 +59,7 @@ export function isGlobalSkillLocation(location: string, ctx: SkillPathContext): 
   const home = normalizeSkillPath(ctx.home);
   const config = normalizeSkillPath(ctx.config);
   const globalRoots = [
-    home ? `${home}/.opencode` : '',
+    config ? `${config}/skills` : '',
     home ? `${home}/.claude/skills` : '',
     home ? `${home}/.agents/skills` : '',
     config,

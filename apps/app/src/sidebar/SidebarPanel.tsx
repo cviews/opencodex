@@ -3,7 +3,7 @@ import { NavLinks, ProjectSection, SettingsButton } from './NavLinks';
 
 export function SidebarPanel({ onSettingsClick, onCollapse }: { onSettingsClick?: () => void; onCollapse?: () => void }) {
   return (
-    <div className="flex h-full flex-col bg-[#F5F5F5] border-r border-[#E5E5E5]">
+    <div className="flex h-full flex-col bg-[#F3F3F3] border-r border-[#E8E8E8] dark:bg-[#252526] dark:border-[#3A3A3A]">
       <div className="flex items-center justify-between px-3 pt-[38px]" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
         <span className="text-sm font-medium text-[#1F1F1F]" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>对话</span>
         <div style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>

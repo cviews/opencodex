@@ -4,6 +4,10 @@ import { opencodeAgent } from '../services/opencodeAdapter';
 
 export type { Agent, Team };
 
+export function getCustomAgents(agents: Agent[]): Agent[] {
+  return agents.filter((agent) => agent.sourceType === 'custom');
+}
+
 interface AgentState {
   agents: Agent[];
   teams: Team[];

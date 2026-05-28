@@ -4,7 +4,7 @@ import { ArrowLeft, Check, ChevronDown, ChevronRight, Cpu, FileText, Folder, Inf
 import { opencodeEngine, opencodeSettings, opencodeProvider, opencodeSettingsProvider } from '../services/opencodeAdapter';
 import { describeAgentPermission } from '../services/permissionNormalize';
 import { MarkdownRenderer } from '../rendering/MarkdownRenderer';
-import { useAgentStore } from '../stores/agent';
+import { getCustomAgents, useAgentStore } from '../stores/agent';
 
 import { useProviderStore } from '../stores/provider';
 import { useSettingsStore } from '../stores/settings';
@@ -1005,6 +1005,7 @@ function UpdateSettingsContent() {
 
 function TeamSettingsContent() {
   const { agents, teams, addAgent, updateAgent, removeAgent, addTeam, updateTeam, removeTeam, fetchAgents, fetchTeams } = useAgentStore();
+  const customAgents = useMemo(() => getCustomAgents(agents), [agents]);
   const { providers, loadProviders } = useProviderStore();
   const [providerEntries, setProviderEntries] = useState<ProviderEntry[]>(INITIAL_CONNECTED_PROVIDERS);
 
@@ -1253,7 +1254,7 @@ const handleAgentConfirm = () => {
       <Header title="智能体" desc="管理 agent markdown 配置和 team 编排。" />
 
       <div className="space-y-8">
-        <Section title="Agents" desc="每个 agent 对应 ~/.opencode/agent 下的 markdown 配置。">
+        <Section title="Agents" desc="仅显示 ~/.opencode/agent 下的自定义 agent 配置，插件 agent 请在对话中通过 @ 使用。">
           <div className="flex items-center justify-between mb-4">
             <div />
             <SmallButton onClick={openAddAgentModal}>
@@ -1262,7 +1263,7 @@ const handleAgentConfirm = () => {
             </SmallButton>
           </div>
           <Card>
-            {agents.map((agent) => (
+            {customAgents.map((agent) => (
               <div key={agent.id} className="p-4">
 <div className="flex items-start justify-between">
                    <button
@@ -1305,7 +1306,7 @@ const handleAgentConfirm = () => {
                 </div>
               </div>
             ))}
-            {agents.length === 0 && <Empty text="尚未发现 agent 配置。" />}
+            {customAgents.length === 0 && <Empty text="尚未发现自定义 agent 配置。" />}
           </Card>
         </Section>
 
@@ -1412,7 +1413,7 @@ const handleAgentConfirm = () => {
           setPrompt={(v) => setTeamForm((prev) => ({ ...prev, prompt: v }))}
           delegate={teamForm.delegate}
           setDelegate={(v) => setTeamForm((prev) => ({ ...prev, delegate: v }))}
-          agents={agents}
+          agents={customAgents}
           selectedIds={teamSelectedAgentIds}
           toggleAgent={toggleTeamAgentSelection}
           onConfirm={handleTeamConfirm}

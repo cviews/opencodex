@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 import type { ActivityStep } from './activitySteps';
-import { COGNITION_LABELS } from './activitySteps';
+import { COGNITION_LABELS, cognitionBaseLabel, isBriefActivityLabel } from './activitySteps';
 import {
   buildGroupPreviewContent,
   groupActivityStepsForRail,
@@ -19,12 +19,14 @@ interface ActivityStepRowProps {
 
 function ActivityStepRow({ step, nested = false, hideRunningPreview = false }: ActivityStepRowProps) {
   const isCompaction = isCompactionStepLabel(step.label);
-  const isCognition = COGNITION_LABELS.has(step.label) || step.collapseWhenDone;
+  const isBrief = isBriefActivityLabel(step.label);
+  const isCognition =
+    COGNITION_LABELS.has(cognitionBaseLabel(step.label)) || step.collapseWhenDone || isBrief;
   const isFailed = step.label.endsWith(' failed');
   const hasBody = !!(step.body && step.body.trim().length > 0);
   const isRunning = step.status === 'running';
-  const canExpand = (hasBody || isFailed) && (!isCognition || !isRunning);
-  const showRunningPreview = isRunning && hasBody && !hideRunningPreview && isCognition;
+  const canExpand = (hasBody || isFailed) && (!isCognition || !isRunning) && !isBrief;
+  const showRunningPreview = isRunning && hasBody && !hideRunningPreview && isCognition && !isBrief;
   const [open, setOpen] = useState(false);
   const [pathTipOpen, setPathTipOpen] = useState(false);
   const pathTitle = step.detailTitle ?? step.detail;

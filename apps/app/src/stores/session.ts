@@ -10,6 +10,12 @@ import { isTopLevelSession, dedupeSessionsById } from '../utils/sessionHierarchy
 import { resyncRunningProjectSessions } from '../services/projectSessionResync';
 import { syncSessionRunStatusToMessageStore } from '../services/sessionRunStatusSync';
 import { syncTeamMemberStatusFromRunStatus } from '../services/teamMemberRunStatusSync';
+import {
+  isLeadSessionAwaitingDelegation,
+  resolveLeadSessionIdForWorkerSession,
+} from '../services/teamLeadSessionStatus';
+import { resetLeadSessionForNewRun, isLeadSessionId } from '../services/sessionRunDisplayLifecycle';
+import { useMessageStore } from './message';
 
 export type SubAgent = SubAgentItem;
 export type SessionRunStatus = 'idle' | 'running' | 'error';
@@ -30,6 +36,10 @@ interface SessionState {
   activeSessionId: string | null;
   selectedSubAgentId: string | null;
   sessionRunStatus: Record<string, SessionRunStatus>;
+  /** Timestamp (ms) when the lead session last started a new run after idle. */
+  sessionRunStartedAt: Record<string, number>;
+  /** Sidebar team/plan/task artifacts cleared after a fully completed run. */
+  runSidebarCleared: Record<string, boolean>;
   loading: boolean;
   error: string | null;
 
@@ -52,6 +62,9 @@ interface SessionState {
   prefetchProjectSessions: (projectPath: string) => Promise<void>;
   fetchSessions: () => Promise<void>;
   fetchSubAgents: (parentSessionId?: string) => Promise<void>;
+  clearSubAgentsForLeadSession: (leadSessionId: string) => void;
+  markRunSidebarCleared: (leadSessionId: string) => void;
+  markRunSidebarVisible: (leadSessionId: string) => void;
   subscribeToEvents: () => () => void;
 }
 
@@ -186,6 +199,88 @@ function resolveSubAgentParentSessionId(
   return parentID || undefined;
 }
 
+function resolveRunStatusWithTeamLeadGuard(
+  sessionId: string,
+  status: SessionRunStatus,
+  state: Pick<SessionState, 'sessionRunStatus' | 'subAgents'>,
+): SessionRunStatus {
+  if (status !== 'idle') return status;
+
+  const { teamModeEnabled, currentTeam } = useTeamStore.getState();
+  const messageState = useMessageStore.getState();
+  if (messageState.isCompactionRunning(sessionId)) {
+    return 'running';
+  }
+  if (
+    isLeadSessionAwaitingDelegation(
+      sessionId,
+      { ...state.sessionRunStatus, [sessionId]: 'idle' },
+      messageState.loadingBySession,
+      messageState.sessionActivity,
+      teamModeEnabled,
+      currentTeam,
+      state.subAgents,
+    )
+  ) {
+    return 'running';
+  }
+
+  return 'idle';
+}
+
+function promoteLeadSessionIfWorkerRunning(
+  sessionId: string,
+  status: SessionRunStatus,
+  subAgents: SubAgent[],
+): void {
+  if (status !== 'running') return;
+
+  const { teamModeEnabled, currentTeam } = useTeamStore.getState();
+  const leadId = resolveLeadSessionIdForWorkerSession(
+    sessionId,
+    teamModeEnabled,
+    currentTeam,
+    subAgents,
+  );
+  if (!leadId || leadId === sessionId) return;
+  if (useSessionStore.getState().sessionRunStatus[leadId] === 'running') return;
+  useSessionStore.getState().setSessionRunStatus(leadId, 'running');
+}
+
+function clearSubAgentsForParent(subAgents: SubAgent[], parentSessionId: string): SubAgent[] {
+  return subAgents.filter((agent) => agent.parentSessionId !== parentSessionId);
+}
+
+function pruneCompletedSubAgentsForParent(subAgents: SubAgent[], parentSessionId: string): SubAgent[] {
+  return subAgents.filter(
+    (agent) => agent.parentSessionId !== parentSessionId || agent.status !== 'completed',
+  );
+}
+
+function resolveSelectedSubAgentAfterPrune(
+  selectedSubAgentId: string | null,
+  subAgents: SubAgent[],
+): string | null {
+  if (!selectedSubAgentId) return null;
+  return subAgents.some((agent) => agent.id === selectedSubAgentId) ? selectedSubAgentId : null;
+}
+
+function applyRunLifecycleToSubAgents(
+  subAgents: SubAgent[],
+  sessionId: string,
+  status: SessionRunStatus,
+  previousStatus: SessionRunStatus | undefined,
+): SubAgent[] {
+  let next = subAgents;
+  if (
+    status === 'running'
+    && (previousStatus === 'idle' || previousStatus === 'error' || previousStatus === undefined)
+  ) {
+    next = clearSubAgentsForParent(next, sessionId);
+  }
+  return next;
+}
+
 function patchSubAgentStatusFromRunStatus(
   subAgents: SubAgent[],
   sessionId: string,
@@ -210,6 +305,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   activeSessionId: null,
   selectedSubAgentId: null,
   sessionRunStatus: {},
+  sessionRunStartedAt: {},
+  runSidebarCleared: {},
   loading: false,
   error: null,
 
@@ -240,6 +337,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       activeSessionId: restored.activeSessionId,
       selectedSubAgentId: restored.selectedSubAgentId,
       sessionRunStatus: restored.sessionRunStatus,
+      sessionRunStartedAt: {},
+      runSidebarCleared: {},
       loading: false,
       error: null,
     });
@@ -350,27 +449,67 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       error: null,
     }),
   setSessionRunStatus: (sessionId, status) => {
+    const previous = get();
+    const previousStatus = previous.sessionRunStatus[sessionId];
+    const resolvedStatus = resolveRunStatusWithTeamLeadGuard(sessionId, status, previous);
+
     set((state) => {
-      const sessionRunStatus = { ...state.sessionRunStatus, [sessionId]: status };
-      const patchedSubAgents = patchSubAgentStatusFromRunStatus(state.subAgents, sessionId, status);
-      const subAgents = patchedSubAgents ?? state.subAgents;
+      const previousStatus = state.sessionRunStatus[sessionId];
+      let sessionRunStartedAt = state.sessionRunStartedAt;
+      let subAgents = applyRunLifecycleToSubAgents(
+        state.subAgents,
+        sessionId,
+        resolvedStatus,
+        previousStatus,
+      );
+
+      if (
+        resolvedStatus === 'running'
+        && (previousStatus === 'idle' || previousStatus === 'error' || previousStatus === undefined)
+      ) {
+        sessionRunStartedAt = { ...sessionRunStartedAt, [sessionId]: Date.now() };
+      } else if (resolvedStatus === 'idle' || resolvedStatus === 'error') {
+        const { [sessionId]: _removed, ...rest } = sessionRunStartedAt;
+        sessionRunStartedAt = rest;
+      }
+
+      const sessionRunStatus = { ...state.sessionRunStatus, [sessionId]: resolvedStatus };
+      const patchedSubAgents = patchSubAgentStatusFromRunStatus(subAgents, sessionId, resolvedStatus);
+      subAgents = patchedSubAgents ?? subAgents;
+      const selectedSubAgentId = resolveSelectedSubAgentAfterPrune(state.selectedSubAgentId, subAgents);
       const currentPath = resolveCurrentProjectPath(state);
       if (!currentPath) {
-        return patchedSubAgents ? { sessionRunStatus, subAgents } : { sessionRunStatus };
+        return {
+          sessionRunStatus,
+          sessionRunStartedAt,
+          subAgents,
+          selectedSubAgentId,
+        };
       }
       const previous = state.byProject[currentPath] ?? emptySessionSnapshot();
       return {
         sessionRunStatus,
+        sessionRunStartedAt,
         subAgents,
+        selectedSubAgentId,
         byProject: persistProjectSnapshot(state.byProject, currentPath, {
           ...previous,
           sessionRunStatus,
           subAgents,
+          selectedSubAgentId,
         }),
       };
     });
-    syncSessionRunStatusToMessageStore(sessionId, status);
-    syncTeamMemberStatusFromRunStatus(sessionId, status);
+    syncSessionRunStatusToMessageStore(sessionId, resolvedStatus);
+    syncTeamMemberStatusFromRunStatus(sessionId, resolvedStatus);
+    promoteLeadSessionIfWorkerRunning(sessionId, resolvedStatus, get().subAgents);
+    if (
+      resolvedStatus === 'running'
+      && (previousStatus === 'idle' || previousStatus === 'error' || previousStatus === undefined)
+      && isLeadSessionId(sessionId)
+    ) {
+      resetLeadSessionForNewRun(sessionId);
+    }
   },
   setActiveSession: (id) => {
     useTeamStore.getState().setSelectedMemberId(null);
@@ -468,7 +607,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const topLevel = dedupeSessionsById((sessions as Session[]).filter(isTopLevelSession));
       set((state) => {
         const currentPath = resolveCurrentProjectPath(state);
-        const sessionRunStatus = mergeSessionRunStatus(state.sessionRunStatus, serverRunStatus);
+        const sessionRunStatus = mergeSessionRunStatus(state.sessionRunStatus, serverRunStatus, true);
         const nextState = {
           sessions: topLevel,
           sessionRunStatus,
@@ -528,15 +667,65 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     try {
       const directory = useProjectStore.getState().currentProject.path || undefined;
       const fresh = await opencodeSession.fetchSubAgents(directory, [parentSessionId]);
+      const runStartedAt = get().sessionRunStartedAt[parentSessionId];
+      const runStatus = get().sessionRunStatus[parentSessionId];
+      const sidebarHidden =
+        !!get().runSidebarCleared[parentSessionId]
+        && (runStatus === 'idle' || runStatus === 'error');
+      if (sidebarHidden) return;
+      const filtered = runStartedAt
+        ? fresh.filter((agent) => {
+            if (agent.status !== 'completed') return true;
+            return agent.createdAt != null && agent.createdAt >= runStartedAt;
+          })
+        : fresh;
       set((state) => ({
         subAgents: [
           ...state.subAgents.filter((a) => a.parentSessionId !== parentSessionId),
-          ...fresh,
+          ...filtered,
         ],
       }));
     } catch (e) {
       console.error('[SessionStore] fetchSubAgents failed:', e);
     }
+  },
+
+  clearSubAgentsForLeadSession: (leadSessionId) => {
+    if (!leadSessionId) return;
+    set((state) => {
+      const subAgents = clearSubAgentsForParent(state.subAgents, leadSessionId);
+      const selectedSubAgentId = resolveSelectedSubAgentAfterPrune(state.selectedSubAgentId, subAgents);
+      const currentPath = resolveCurrentProjectPath(state);
+      if (!currentPath) {
+        return { subAgents, selectedSubAgentId };
+      }
+      const previous = state.byProject[currentPath] ?? emptySessionSnapshot();
+      return {
+        subAgents,
+        selectedSubAgentId,
+        byProject: persistProjectSnapshot(state.byProject, currentPath, {
+          ...previous,
+          subAgents,
+          selectedSubAgentId,
+        }),
+      };
+    });
+  },
+
+  markRunSidebarCleared: (leadSessionId) => {
+    if (!leadSessionId) return;
+    set((state) => ({
+      runSidebarCleared: { ...state.runSidebarCleared, [leadSessionId]: true },
+    }));
+  },
+
+  markRunSidebarVisible: (leadSessionId) => {
+    if (!leadSessionId) return;
+    set((state) => {
+      if (!state.runSidebarCleared[leadSessionId]) return state;
+      const { [leadSessionId]: _removed, ...runSidebarCleared } = state.runSidebarCleared;
+      return { runSidebarCleared };
+    });
   },
 
   subscribeToEvents: () => {
@@ -634,6 +823,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         if (status.type === 'busy' || status.type === 'retry') {
           get().setSessionRunStatus(sessionID, 'running');
         } else if (status.type === 'idle') {
+          if (useMessageStore.getState().isCompactionRunning(sessionID)) return;
           get().setSessionRunStatus(sessionID, 'idle');
         }
         const parentID = resolveSubAgentParentSessionId(get(), sessionID);
@@ -645,7 +835,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       on(EventType.SESSION_IDLE, (event) => {
         const props = extractEventPayload(event as Record<string, unknown>);
         const sessionID = String(props.sessionID ?? props.sessionId ?? '');
-        if (sessionID) get().setSessionRunStatus(sessionID, 'idle');
+        if (sessionID) {
+          if (useMessageStore.getState().isCompactionRunning(sessionID)) return;
+          get().setSessionRunStatus(sessionID, 'idle');
+        }
         const parentID = sessionID ? resolveSubAgentParentSessionId(get(), sessionID) : undefined;
         if (parentID) {
           void get().fetchSubAgents(parentID);

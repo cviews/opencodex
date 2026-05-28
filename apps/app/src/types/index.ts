@@ -39,6 +39,8 @@ export interface SubAgentItem {
   icon: string;
   status: 'completed' | 'running' | 'pending';
   title: string;
+  /** Child session creation time (ms), used to scope sub-agents to the current run. */
+  createdAt?: number;
 }
 
 export interface AgentItem {

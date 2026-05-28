@@ -3,9 +3,11 @@ import { UserMessageItem, AssistantMessageItem } from './MessageItem';
 import { TeamRelayMessageItem } from './TeamRelayMessageItem';
 import { ActivityRail } from './ActivityRail';
 import { buildTurnActivitySteps, COGNITION_WAIT_LABELS } from './activitySteps';
-import { getUserMessageDisplay, isTeamRelayMessage } from './displayContent';
+import { getUserMessageDisplay, isCompactionInternalContent, isTeamRelayMessage } from './displayContent';
 import { dedupeTeamRelayTurns } from './teamRelayDedupe';
+import { isCompactionUiActive } from './compactionActivity';
 import type { CompactionActivity, SessionActivity } from '../stores/message';
+import { useMessageStore } from '../stores/message';
 import type { ChatMessage } from './types';
 import {
   getCachedDefaultModelRef,
@@ -56,6 +58,10 @@ interface MessageTurn {
 
 function isHiddenUserMessage(msg: ChatMessage): boolean {
   if (msg.role !== 'user') return false;
+  const raw = msg.content ?? '';
+  if (isCompactionInternalContent(raw) || isCompactionInternalContent(msg.displayContent ?? '')) {
+    return true;
+  }
   return !getUserMessageDisplay(msg).trim();
 }
 
@@ -145,16 +151,14 @@ export function MessageList({
   compactionActivities = [],
   onRestoreToComposer,
 }: MessageListProps) {
+  const abortedTurnSnapshots = useMessageStore((s) => s.abortedTurnSnapshots);
   const turns = useMemo(
     () => dedupeTeamRelayTurns(groupIntoTurns(messages)),
     [messages],
   );
 
   const compactionRunning = compactionActivities.some((c) => c.status === 'running');
-  const isCompressingUi =
-    compactionRunning ||
-    activity?.label === 'Compressing' ||
-    (typeof activity?.label === 'string' && activity.label.includes('压缩'));
+  const isCompressingUi = isCompactionUiActive(compactionActivities, activity?.label);
 
   return (
     <div
@@ -185,6 +189,9 @@ export function MessageList({
         const isCognitionWait =
           activity?.kind === 'thinking' &&
           activity.label !== 'Compressing' &&
+          activity.label !== '正在手动压缩上下文…' &&
+          activity.label !== '正在自动压缩上下文…' &&
+          !(typeof activity.label === 'string' && activity.label.includes('压缩')) &&
           (COGNITION_WAIT_LABELS.has(activity.label) ||
             activity.label === 'Preparing next step');
 
@@ -192,10 +199,21 @@ export function MessageList({
           isStreamingTurn &&
           !isCompressingUi &&
           (isCognitionWait ||
+            activity?.kind === 'thinking' ||
             thinking?.active ||
             !!thinking?.reasoningText?.trim());
 
-        const turnActivitySteps = buildTurnActivitySteps({
+        const sessionId =
+          turn.user?.sessionID
+          ?? turn.user?.sessionId
+          ?? lastAssistantInTurn?.sessionID
+          ?? lastAssistantInTurn?.sessionId;
+        const abortedSnapshot =
+          isLastTurn && !isStreamingTurn && sessionId
+            ? abortedTurnSnapshots[sessionId]
+            : undefined;
+
+        let turnActivitySteps = buildTurnActivitySteps({
           assistants: railAssistants,
           lastAssistantId: railAssistants[railAssistants.length - 1]?.id ?? lastAssistantId,
           thinkingActive: cognitionLive,
@@ -207,12 +225,18 @@ export function MessageList({
           isStreaming: isStreamingTurn,
           compactionActivities: turnCompactions,
           hideStreamDraft: isCompressingUi,
+          hideCompactionSteps: isCompressingUi,
           modelSupportsReasoning: turnModelSupportsReasoning,
         });
+
+        if (abortedSnapshot?.length) {
+          turnActivitySteps = abortedSnapshot;
+        }
 
         const hasRunningActivity =
           turnActivitySteps.some((step) => step.status === 'running');
         const suppressBody =
+          !abortedSnapshot?.length &&
           (isStreamingTurn || isCompressingUi) &&
           (isCompressingUi ||
             compactionRunning ||
@@ -251,9 +275,9 @@ export function MessageList({
                 {turnActivitySteps.length > 0 && (
                   <ActivityRail
                     steps={turnActivitySteps}
-                    isStreaming={isStreamingTurn}
+                    isStreaming={isStreamingTurn && !abortedSnapshot?.length}
                     streamDraftContent={
-                      suppressBody && isStreamingTurn && !isCompressingUi
+                      suppressBody && isStreamingTurn && !isCompressingUi && !abortedSnapshot?.length
                         ? displayMessage?.content?.trim() || undefined
                         : undefined
                     }

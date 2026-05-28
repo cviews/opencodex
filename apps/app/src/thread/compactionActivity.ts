@@ -77,7 +77,7 @@ export function parseCompactionsFromSessionMessages(
             turnUserMessageId: currentTurnUserId,
             afterMessageId: lastAssistantId,
             reason: p.auto === true ? 'auto' : p.auto === false ? 'manual' : undefined,
-            status: compacted != null ? 'done' : 'done',
+            status: compacted != null ? 'done' : 'running',
             streamText: '',
             startedAt: created,
             endedAt: compacted ?? created,
@@ -136,22 +136,59 @@ export function buildCompactionBody(c: CompactionActivity): string | undefined {
 export function compactionToActivityStep(c: CompactionActivity): ActivityStep {
   const isRunning = c.status === 'running';
   const body = buildCompactionBody(c);
-  const detail =
-    c.reason === 'auto' ? 'auto' : c.reason === 'manual' ? 'manual' : undefined;
-  const fallback = isRunning
+  const label = isRunning
     ? c.reason === 'manual'
-      ? '正在压缩上下文…'
-      : '正在自动压缩上下文…'
+      ? '正在手动压缩上下文…'
+      : c.reason === 'auto'
+        ? '正在自动压缩上下文…'
+        : '正在压缩上下文…'
+    : '上下文已压缩';
+  const fallback = isRunning
+    ? label
     : 'Context compacted.';
   return {
     id: `compaction-${c.id}`,
-    label: isRunning ? 'Compressing' : 'Compressed',
-    detail,
+    label,
     body: body?.trim() ? body : fallback,
     status: isRunning ? 'running' : 'done',
   };
 }
 
 export function isCompactionStepLabel(label: string): boolean {
-  return label === 'Compressing' || label === 'Compressed';
+  return (
+    label === 'Compressing'
+    || label === 'Compressed'
+    || label.includes('压缩上下文')
+    || label === '上下文已压缩'
+  );
+}
+
+export function getCompactionNoticeMessage(reason?: 'auto' | 'manual'): string {
+  if (reason === 'auto') return '上下文接近上限，正在自动压缩，请稍候…';
+  if (reason === 'manual') return '正在手动压缩上下文，请稍候…';
+  return '正在压缩上下文，请稍候…';
+}
+
+export function resolveRunningCompactionReason(
+  compactions: CompactionActivity[],
+  activityLabel?: string | null,
+): 'auto' | 'manual' | undefined {
+  const running = compactions.find((c) => c.status === 'running');
+  if (running?.reason) return running.reason;
+  if (activityLabel === 'Compressing' || activityLabel === '正在手动压缩上下文…') return 'manual';
+  if (typeof activityLabel === 'string' && activityLabel.includes('自动压缩')) return 'auto';
+  return undefined;
+}
+
+export function isCompactionUiActive(
+  compactions: CompactionActivity[],
+  activityLabel?: string | null,
+): boolean {
+  return (
+    compactions.some((c) => c.status === 'running')
+    || activityLabel === 'Compressing'
+    || activityLabel === '正在手动压缩上下文…'
+    || activityLabel === '正在自动压缩上下文…'
+    || (typeof activityLabel === 'string' && activityLabel.includes('压缩'))
+  );
 }

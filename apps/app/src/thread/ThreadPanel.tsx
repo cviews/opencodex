@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { ArrowDown, Sparkles } from 'lucide-react';
 import { ThreadHeader } from './ThreadHeader';
 import { MessageList } from './MessageList';
+import { CompactionNotice } from './CompactionNotice';
 import { DelegationParallelBanner } from './DelegationParallelBanner';
 import { Composer } from './Composer';
 import { PermissionApprovalPanel } from './PermissionApprovalPanel';
@@ -21,6 +22,7 @@ import { EmbeddedTerminal } from '../components/EmbeddedTerminal';
 import { useTerminalStore } from '../stores/terminal';
 import { questionLog } from '../utils/questionDebug';
 import { pickQuestionForSessionTree, collectRelatedSessionIds } from '../utils/sessionQuestionTree';
+import { isCompactionUiActive, resolveRunningCompactionReason } from './compactionActivity';
 import type { Session } from '@opencodex/types';
 import type { SubAgentItem } from '../types';
 
@@ -49,7 +51,7 @@ export function ThreadPanel(props: { leftCollapsed?: boolean; onToggleLeft?: () 
   const isTerminalOpen = useTerminalStore((s) => s.isOpen);
   const [composerRestoreText, setComposerRestoreText] = useState<string | null>(null);
   const location = useLocation();
-  const { messages, thinking, loadingBySession, sessionActivity, compactionsBySession } = useMessageStore();
+  const { messages, thinking, loadingBySession, sessionActivity, sessionRunNotices, compactionsBySession } = useMessageStore();
   const { activeSessionId, subAgents, selectedSubAgentId, sessions } = useSessionStore();
   const { teamModeEnabled, selectedMemberId, currentTeam } = useTeamStore();
   const {
@@ -77,12 +79,21 @@ export function ThreadPanel(props: { leftCollapsed?: boolean; onToggleLeft?: () 
     setShowJumpToLatest(!nearBottom);
   }, [isNearBottom]);
 
-  const scrollToBottom = useCallback(() => {
+  const scrollToBottom = useCallback((options?: { forcePin?: boolean }) => {
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
-    userPinnedToBottomRef.current = true;
+    if (options?.forcePin !== false) {
+      userPinnedToBottomRef.current = true;
+    }
     setShowJumpToLatest(false);
+    const run = () => {
+      el.scrollTop = el.scrollHeight;
+    };
+    run();
+    requestAnimationFrame(() => {
+      run();
+      requestAnimationFrame(run);
+    });
   }, []);
 
   const effectiveSessionId = getEffectiveSessionId();
@@ -124,8 +135,7 @@ export function ThreadPanel(props: { leftCollapsed?: boolean; onToggleLeft?: () 
 
     const resizeObserver = new ResizeObserver(() => {
       if (userPinnedToBottomRef.current) {
-        el.scrollTop = el.scrollHeight;
-        setShowJumpToLatest(false);
+        scrollToBottom({ forcePin: false });
       } else {
         updateJumpButton();
       }
@@ -138,16 +148,13 @@ export function ThreadPanel(props: { leftCollapsed?: boolean; onToggleLeft?: () 
       el.removeEventListener('scroll', handleScroll);
       resizeObserver.disconnect();
     };
-  }, [updateJumpButton, chatMessages.length]);
+  }, [updateJumpButton, chatMessages.length, scrollToBottom]);
 
   useEffect(() => {
     userPinnedToBottomRef.current = true;
     setShowJumpToLatest(false);
-    const el = scrollRef.current;
-    if (el) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [effectiveSessionId]);
+    scrollToBottom();
+  }, [effectiveSessionId, scrollToBottom]);
 
   const selectedMember = teamModeEnabled && currentTeam && selectedMemberId
     ? getDisplayTeamMembers(currentTeam, subAgents, activeSessionId ?? undefined)
@@ -231,14 +238,19 @@ export function ThreadPanel(props: { leftCollapsed?: boolean; onToggleLeft?: () 
   const displaySkillIcon = isSkillCreator ? (skillIcon || '✏️') : skillIcon;
 
   const sessionRunStatusMap = useSessionStore((s) => s.sessionRunStatus);
+  const delegationContext = teamModeEnabled && currentTeam
+    ? { teamModeEnabled, currentTeam, subAgents }
+    : undefined;
   const isStreaming = isSessionExecuting(
     effectiveSessionId,
     sessionRunStatusMap,
     loadingBySession,
     sessionActivity,
+    delegationContext,
   );
   const sessionRunStatus = effectiveSessionId ? sessionRunStatusMap[effectiveSessionId] : undefined;
   const liveActivity = effectiveSessionId ? sessionActivity[effectiveSessionId] ?? null : null;
+  const sessionRunNotice = effectiveSessionId ? sessionRunNotices[effectiveSessionId] : undefined;
   const sessionCompactions = useMemo(
     () =>
       effectiveSessionId
@@ -246,25 +258,35 @@ export function ThreadPanel(props: { leftCollapsed?: boolean; onToggleLeft?: () 
         : EMPTY_COMPACTIONS,
     [compactionsBySession, effectiveSessionId],
   );
+  const isCompacting = isCompactionUiActive(sessionCompactions, liveActivity?.label);
+  const compactionReason = resolveRunningCompactionReason(
+    sessionCompactions,
+    liveActivity?.label,
+  );
 
   const lastMessage = messages.length > 0 ? messages[messages.length - 1] : undefined;
+  const lastMessageIsUser = lastMessage?.role === 'user';
 
   useEffect(() => {
-    if (!userPinnedToBottomRef.current) return;
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-    setShowJumpToLatest(false);
+    if (!userPinnedToBottomRef.current && !lastMessageIsUser) return;
+    if (lastMessageIsUser) {
+      userPinnedToBottomRef.current = true;
+    }
+    scrollToBottom({ forcePin: false });
   }, [
     messages.length,
+    lastMessage?.id,
     lastMessage?.content,
     lastMessage?.reasoningContent,
+    lastMessageIsUser,
     isStreaming,
     liveActivity?.kind,
     liveActivity?.label,
     thinking?.reasoningText,
     thinking?.active,
     sessionCompactions.length,
+    isCompacting,
+    scrollToBottom,
   ]);
 
   const handleRestoreToComposer = useCallback((text: string) => {
@@ -310,11 +332,14 @@ export function ThreadPanel(props: { leftCollapsed?: boolean; onToggleLeft?: () 
               </div>
             </div>
           )}
+          {isCompacting && (
+            <CompactionNotice reason={compactionReason} />
+          )}
         </div>
         {showJumpToLatest && (
           <button
             type="button"
-            onClick={scrollToBottom}
+            onClick={() => scrollToBottom()}
             aria-label="滚动到最新消息"
             className="absolute bottom-4 left-1/2 z-20 flex h-8 w-8 -translate-x-1/2 items-center justify-center rounded-full bg-[#1F1F1F] text-white shadow-lg transition-colors hover:bg-[#333333] pointer-events-auto"
           >
@@ -337,6 +362,11 @@ export function ThreadPanel(props: { leftCollapsed?: boolean; onToggleLeft?: () 
 
       {!selectedMember && !isViewingSubAgent && (
         <>
+          {effectiveSessionId && sessionRunNotice && isStreaming && (
+            <div className="shrink-0 border-t border-[#FDE68A] bg-[#FFFBEB] px-4 py-2 text-center text-sm text-[#B45309]">
+              {sessionRunNotice.message}
+            </div>
+          )}
           {effectiveSessionId && sessionRunStatus === 'error' && (
             <div className="shrink-0 border-t border-[#FECACA] bg-[#FEF2F2] px-4 py-2 text-center text-sm text-[#DC2626]">
               会话执行出错，请重试发送；详情见开发者工具 [zmn-opencodex] 日志。
@@ -348,6 +378,7 @@ export function ThreadPanel(props: { leftCollapsed?: boolean; onToggleLeft?: () 
             loading={isStreaming}
             restoreText={composerRestoreText}
             onRestoreHandled={() => setComposerRestoreText(null)}
+            onSend={() => scrollToBottom()}
             onAbort={() => {
               const abortSessionId = effectiveSessionId ?? activeSessionId;
               if (abortSessionId) {

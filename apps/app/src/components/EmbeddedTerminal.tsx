@@ -124,6 +124,17 @@ function TerminalTabView({
     term.open(container);
     term.unicode.activeVersion = '11';
 
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown') return true;
+      if (event.ctrlKey && event.key === 'c' && !event.metaKey && !event.altKey) {
+        if (ws?.readyState === TERMINAL_SOCKET_OPEN) {
+          ws.send('\x03');
+        }
+        return false;
+      }
+      return true;
+    });
+
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (disposed) return;
@@ -491,15 +502,21 @@ export function EmbeddedTerminal() {
 
   const handleResizeStart = (event: React.MouseEvent) => {
     event.preventDefault();
+    event.stopPropagation();
     const startY = event.clientY;
     const startHeight = height;
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
 
     const onMouseMove = (moveEvent: MouseEvent) => {
+      moveEvent.preventDefault();
       const delta = startY - moveEvent.clientY;
       setHeight(startHeight + delta);
     };
 
     const onMouseUp = () => {
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
     };
@@ -525,7 +542,7 @@ export function EmbeddedTerminal() {
       style={{ height }}
     >
       <div
-        className="h-1 cursor-row-resize bg-transparent hover:bg-[#2B8FFF]/30 transition-colors"
+        className="relative z-20 h-2 shrink-0 cursor-row-resize bg-transparent hover:bg-[#2B8FFF]/30 transition-colors"
         onMouseDown={handleResizeStart}
         aria-hidden
       />

@@ -3,6 +3,10 @@ import type { Message } from '@opencodex/types';
 import type { ToolCall } from '../types';
 import { opencodeMessage, opencodeSession, opencodeTeam } from '../services/opencodeAdapter';
 import { handleTeamMessageToolSuccess } from '../services/teamMemberExecution';
+import {
+  isLeadSessionAwaitingDelegation,
+  resolveLeadSessionIdForWorkerSession,
+} from '../services/teamLeadSessionStatus';
 import { useTeamStore } from './team';
 import { on, EventType, extractEventPayload, registerCrossProjectEventHandler } from '../sdk/eventRouter';
 import { sanitizeUserMessageDisplay } from '../thread/displayContent';
@@ -13,15 +17,29 @@ import { isPendingSessionId } from '../utils/pendingSession';
 import { useSessionStore, type SessionRunStatus } from './session';
 import { useProjectStore } from './project';
 import { questionLog } from '../utils/questionDebug';
+import {
+  formatProviderErrorNotice,
+  formatRetryStatusNotice,
+  isRetryableProviderError,
+  type SessionRunNotice,
+} from '../services/sessionRunFeedback';
 import { setSessionRunStatusSyncHandler } from '../services/sessionRunStatusSync';
 
 import type { CompactionActivity } from '../thread/compactionActivity';
+import {
+  buildAbortTurnActivitySnapshot,
+  COGNITION_WAIT_LABELS,
+  type ActivityStep,
+} from '../thread/activitySteps';
+import { toChatMessage } from '../thread/utils';
 import { modelSupportsReasoning, noteRuntimeModelReasoning, parseModelRef, getCachedDefaultModelRef } from '../thread/composer/models';
 
 export type { CompactionActivity };
 
 const messageCache = new Map<string, Message[]>();
 const compactionCache = new Map<string, CompactionActivity[]>();
+const compactionTurnResumeKeys = new Set<string>();
+const sessionCompactingTimestamps = new Map<string, number>();
 const pendingDisplayBySession = new Map<string, string[]>();
 const OPTIMISTIC_USER_PREFIX = 'pending-user-';
 
@@ -104,8 +122,41 @@ function findRunningCompaction(sessionId: string): CompactionActivity | undefine
   return getCachedCompactions(sessionId).find((c) => c.status === 'running');
 }
 
+function isSessionCompactionRunning(sessionId: string): boolean {
+  return !!findRunningCompaction(sessionId);
+}
+
+function markCompactionTurnResume(sessionId: string): void {
+  if (readMessageState().loadingBySession[sessionId]) {
+    compactionTurnResumeKeys.add(scopedSessionKey(sessionId));
+  }
+}
+
+function shouldResumeAfterCompaction(sessionId: string): boolean {
+  return compactionTurnResumeKeys.has(scopedSessionKey(sessionId));
+}
+
+function clearCompactionTurnResume(sessionId: string): void {
+  compactionTurnResumeKeys.delete(scopedSessionKey(sessionId));
+}
+
 function upsertCachedCompaction(sessionId: string, next: CompactionActivity): void {
-  const list = [...getCachedCompactions(sessionId)];
+  let list = [...getCachedCompactions(sessionId)];
+  if (next.status === 'running') {
+    const existingRunning = list.find((c) => c.status === 'running');
+    if (existingRunning && existingRunning.id !== next.id) {
+      const idx = list.findIndex((c) => c.id === existingRunning.id);
+      list[idx] = {
+        ...existingRunning,
+        ...next,
+        id: existingRunning.id,
+        reason: next.reason ?? existingRunning.reason,
+        startedAt: Math.min(existingRunning.startedAt, next.startedAt),
+      };
+      setCachedCompactions(sessionId, list.sort((a, b) => a.startedAt - b.startedAt));
+      return;
+    }
+  }
   const idx = list.findIndex((c) => c.id === next.id);
   if (idx >= 0) {
     list[idx] = { ...list[idx], ...next };
@@ -607,10 +658,13 @@ interface MessageState {
   loading: boolean;
   loadingBySession: Record<string, boolean>;
   sessionActivity: Record<string, SessionActivity>;
+  sessionRunNotices: Record<string, SessionRunNotice>;
+  abortedTurnSnapshots: Record<string, ActivityStep[]>;
   thinking: ThinkingState;
   error: string | null;
   setSessionActivity: (sessionId: string, activity: SessionActivity | null) => void;
   getCompactionsForSession: (sessionId: string) => CompactionActivity[];
+  isCompactionRunning: (sessionId: string) => boolean;
   startManualCompaction: (sessionId: string) => void;
   finishManualCompaction: (sessionId: string, error?: string) => void;
 
@@ -712,6 +766,43 @@ function noteReasoningModelForSession(sessionID: string, messageID?: string): vo
   noteRuntimeModelReasoning(modelRef);
 }
 
+function captureSessionAbortSnapshot(sessionId: string): ActivityStep[] {
+  const state = readMessageState();
+  const activity = state.sessionActivity[sessionId] ?? null;
+  const thinking = state.thinking;
+  const messages = getCachedMessages(sessionId).map((message) =>
+    toChatMessage(message as Message & { compactionSummary?: boolean }),
+  );
+
+  const assistants = [];
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.role === 'user') break;
+    if (message.role === 'assistant' && !message.compactionSummary) {
+      assistants.unshift(message);
+    }
+  }
+
+  const cognitionLive =
+    activity?.kind === 'thinking'
+    || COGNITION_WAIT_LABELS.has(activity?.label ?? '')
+    || thinking.active
+    || !!thinking.reasoningText?.trim()
+    || !!activity;
+
+  return buildAbortTurnActivitySnapshot({
+    assistants,
+    lastAssistantId: assistants[assistants.length - 1]?.id,
+    thinkingActive: cognitionLive,
+    reasoningText: thinking.reasoningText,
+    reasoningDone: thinking.reasoningDone,
+    liveActivity: activity,
+    isStreaming: true,
+    compactionActivities: getCachedCompactions(sessionId),
+    modelSupportsReasoning: !!thinking.reasoningText?.trim() || !!thinking.model,
+  });
+}
+
 export const useMessageStore = create<MessageState>((set, get) => {
   readMessageState = get;
   patchThinkingActivityImpl = (sessionId, label) => {
@@ -725,10 +816,13 @@ export const useMessageStore = create<MessageState>((set, get) => {
   loading: false,
   loadingBySession: {},
   sessionActivity: {},
+  sessionRunNotices: {},
+  abortedTurnSnapshots: {},
   thinking: { active: false },
   error: null,
 
   getCompactionsForSession: (sessionId) => getCachedCompactions(sessionId),
+  isCompactionRunning: (sessionId) => isSessionCompactionRunning(sessionId),
 
   startManualCompaction: (sessionId) => {
     if (findRunningCompaction(sessionId)) return;
@@ -743,7 +837,7 @@ export const useMessageStore = create<MessageState>((set, get) => {
         sessionActivity: patchSessionActivity(state.sessionActivity, sessionId, {
           sessionId,
           kind: 'thinking',
-          label: 'Compressing',
+          label: '正在手动压缩上下文…',
         }),
         thinking:
           state.activeSessionId === sessionId ? { active: true } : state.thinking,
@@ -917,9 +1011,11 @@ export const useMessageStore = create<MessageState>((set, get) => {
 
     set((state) => {
       const loadingBySession = { ...state.loadingBySession, [sessionId]: true };
+      const { [sessionId]: _snapshot, ...abortedTurnSnapshots } = state.abortedTurnSnapshots;
       return {
         loadingBySession,
         loading: syncActiveLoading(state.activeSessionId, loadingBySession),
+        abortedTurnSnapshots,
         sessionActivity: patchSessionActivity(state.sessionActivity, sessionId, {
           sessionId,
           kind: 'thinking',
@@ -1033,17 +1129,24 @@ export const useMessageStore = create<MessageState>((set, get) => {
 
   abortSession: async (sessionId: string) => {
     try {
+      const snapshot = captureSessionAbortSnapshot(sessionId);
       await opencodeSession.abortSession(sessionId);
       const { teamModeEnabled, currentTeam } = useTeamStore.getState();
       if (teamModeEnabled && currentTeam?.name && currentTeam.sessionId === sessionId) {
         await opencodeTeam.shutdownTeam(currentTeam.name).catch(() => {});
       }
+      useSessionStore.getState().setSessionRunStatus(sessionId, 'idle');
       set((state) => {
         const { [sessionId]: _removed, ...loadingBySession } = state.loadingBySession;
         return {
           loadingBySession,
           loading: syncActiveLoading(state.activeSessionId, loadingBySession),
           sessionActivity: patchSessionActivity(state.sessionActivity, sessionId, null),
+          thinking: state.activeSessionId === sessionId ? { active: false } : state.thinking,
+          abortedTurnSnapshots:
+            snapshot.length > 0
+              ? { ...state.abortedTurnSnapshots, [sessionId]: snapshot }
+              : state.abortedTurnSnapshots,
         };
       });
     } catch (e) {
@@ -1081,6 +1184,8 @@ export const useMessageStore = create<MessageState>((set, get) => {
       loading: false,
       loadingBySession: {},
       sessionActivity: {},
+      sessionRunNotices: {},
+      abortedTurnSnapshots: {},
       thinking: { active: false },
       error: null,
     });
@@ -1117,11 +1222,16 @@ export const useMessageStore = create<MessageState>((set, get) => {
         };
       }
       if (status !== 'idle' && status !== 'error') return state;
-      if (!state.loadingBySession[sessionId]) return state;
+      if (isSessionCompactionRunning(sessionId)) return state;
+      const hadLoading = !!state.loadingBySession[sessionId];
+      const hadActivity = !!state.sessionActivity[sessionId];
+      if (!hadLoading && !hadActivity) return state;
       const { [sessionId]: _removed, ...loadingBySession } = state.loadingBySession;
       return {
         loadingBySession,
         loading: syncActiveLoading(state.activeSessionId, loadingBySession),
+        sessionActivity: patchSessionActivity(state.sessionActivity, sessionId, null),
+        thinking: state.activeSessionId === sessionId ? { active: false } : state.thinking,
       };
     });
   },
@@ -1242,17 +1352,27 @@ export const useMessageStore = create<MessageState>((set, get) => {
     };
 
     const syncCompactionsToStore = (sessionID: string) => {
-      if (get().activeSessionId !== sessionID) return;
+      const compactions = getCachedCompactions(sessionID);
       set((state) => ({
         compactionsBySession: {
           ...state.compactionsBySession,
-          [sessionID]: getCachedCompactions(sessionID),
+          [sessionID]: compactions,
         },
       }));
     };
 
     const markSessionBusy = (sessionID: string) => {
       useSessionStore.getState().setSessionRunStatus(sessionID, 'running');
+      const { teamModeEnabled, currentTeam } = useTeamStore.getState();
+      const leadId = resolveLeadSessionIdForWorkerSession(
+        sessionID,
+        teamModeEnabled,
+        currentTeam,
+        useSessionStore.getState().subAgents,
+      );
+      if (leadId && leadId !== sessionID) {
+        useSessionStore.getState().setSessionRunStatus(leadId, 'running');
+      }
       set((state) => {
         const loadingBySession = { ...state.loadingBySession, [sessionID]: true };
         return {
@@ -1262,15 +1382,80 @@ export const useMessageStore = create<MessageState>((set, get) => {
       });
     };
 
+    const markSessionCompacting = (
+      sessionID: string,
+      reason?: 'auto' | 'manual',
+    ) => {
+      markCompactionTurnResume(sessionID);
+      markSessionBusy(sessionID);
+      set((state) => ({
+        sessionActivity: patchSessionActivity(state.sessionActivity, sessionID, {
+          sessionId: sessionID,
+          kind: 'thinking',
+          label: reason === 'manual' ? '正在手动压缩上下文…' : '正在自动压缩上下文…',
+        }),
+        thinking:
+          state.activeSessionId === sessionID ? { active: true } : state.thinking,
+      }));
+    };
+
+    const resumeSessionAfterCompaction = (sessionID: string) => {
+      if (!shouldResumeAfterCompaction(sessionID)) return;
+
+      const directory = useProjectStore.getState().currentProject.path || undefined;
+      const syncRunStatusFromServer = async (): Promise<boolean> => {
+        try {
+          const serverRun = await opencodeSession.fetchSessionRunStatus(directory);
+          if (serverRun[sessionID] === 'running') {
+            markSessionBusy(sessionID);
+            clearCompactionTurnResume(sessionID);
+            return true;
+          }
+        } catch {
+          // ignore polling errors
+        }
+        return false;
+      };
+
+      markSessionBusy(sessionID);
+      void syncRunStatusFromServer();
+      void get().loadMessages(sessionID);
+      for (const delayMs of [300, 900, 1800]) {
+        window.setTimeout(() => {
+          void syncRunStatusFromServer();
+        }, delayMs);
+      }
+    };
+
     const clearSessionBusy = (sessionID: string) => {
+      if (isSessionCompactionRunning(sessionID)) return;
       resetTurnWaitState(sessionID);
-      useSessionStore.getState().setSessionRunStatus(sessionID, 'idle');
+      const { teamModeEnabled, currentTeam } = useTeamStore.getState();
+      const { subAgents, sessionRunStatus } = useSessionStore.getState();
+      const current = get();
+      const keepLeadRunning = isLeadSessionAwaitingDelegation(
+        sessionID,
+        sessionRunStatus,
+        current.loadingBySession,
+        current.sessionActivity,
+        teamModeEnabled,
+        currentTeam,
+        subAgents,
+      );
+      useSessionStore.getState().setSessionRunStatus(sessionID, keepLeadRunning ? 'running' : 'idle');
+      if (!keepLeadRunning) {
+        clearCompactionTurnResume(sessionID);
+      }
       set((state) => {
         const { [sessionID]: _removed, ...loadingBySession } = state.loadingBySession;
+        const { [sessionID]: _notice, ...sessionRunNotices } = state.sessionRunNotices;
+        const { [sessionID]: _snapshot, ...abortedTurnSnapshots } = state.abortedTurnSnapshots;
         return {
           loadingBySession,
           loading: syncActiveLoading(state.activeSessionId, loadingBySession),
           sessionActivity: patchSessionActivity(state.sessionActivity, sessionID, null),
+          sessionRunNotices,
+          abortedTurnSnapshots,
           thinking: state.activeSessionId === sessionID ? { active: false } : state.thinking,
         };
       });
@@ -1285,15 +1470,19 @@ export const useMessageStore = create<MessageState>((set, get) => {
     ) => {
       const { label, detail: parsedDetail } = formatToolActivityLabel(toolName, input);
       markSessionBusy(sessionID);
-      set((state) => ({
-        sessionActivity: patchSessionActivity(state.sessionActivity, sessionID, {
-          sessionId: sessionID,
-          kind,
-          label,
-          toolName,
-          detail: detail ?? parsedDetail,
-        }),
-      }));
+      set((state) => {
+        const { [sessionID]: _notice, ...sessionRunNotices } = state.sessionRunNotices;
+        return {
+          sessionRunNotices,
+          sessionActivity: patchSessionActivity(state.sessionActivity, sessionID, {
+            sessionId: sessionID,
+            kind,
+            label,
+            toolName,
+            detail: detail ?? parsedDetail,
+          }),
+        };
+      });
     };
 
     unsubscribers.push(
@@ -1574,6 +1763,9 @@ export const useMessageStore = create<MessageState>((set, get) => {
           return;
         }
 
+        const isCompactionDone =
+          typeof timeObj?.compacted === 'number' || timeObj?.end != null;
+
         if (partType === 'compaction' && partID) {
           const auto = part.auto === true;
           upsertCachedCompaction(sessionID, {
@@ -1582,13 +1774,18 @@ export const useMessageStore = create<MessageState>((set, get) => {
             turnUserMessageId: findLastUserMessageId(sessionID),
             afterMessageId: findLastAssistantMessageId(sessionID),
             reason: auto ? 'auto' : 'manual',
-            status: isDone ? 'done' : 'running',
+            status: isCompactionDone ? 'done' : 'running',
             streamText: '',
             startedAt: typeof timeObj?.created === 'number' ? timeObj.created : Date.now(),
             endedAt: typeof timeObj?.compacted === 'number' ? timeObj.compacted : undefined,
           });
-          markSessionBusy(sessionID);
-          syncCompactionsToStore(sessionID);
+          if (isCompactionDone) {
+            syncCompactionsToStore(sessionID);
+            resumeSessionAfterCompaction(sessionID);
+          } else {
+            markSessionCompacting(sessionID, auto ? 'auto' : 'manual');
+            syncCompactionsToStore(sessionID);
+          }
           return;
         }
 
@@ -1869,11 +2066,24 @@ export const useMessageStore = create<MessageState>((set, get) => {
       on(EventType.SESSION_STATUS, (event) => {
         const props = extractEventPayload(event as Record<string, unknown>);
         const sessionID = String(props.sessionID ?? props.sessionId ?? '');
-        const status = props.status as { type?: string } | undefined;
+        const status = props.status as Record<string, unknown> | undefined;
         if (!sessionID || !status?.type) return;
         if (status.type === 'busy' || status.type === 'retry') {
           pipelineMark(sessionID, 'session:busy', { status: status.type });
           markSessionBusy(sessionID);
+          if (status.type === 'retry') {
+            const notice = formatRetryStatusNotice(status, props);
+            set((state) => ({
+              sessionRunNotices: { ...state.sessionRunNotices, [sessionID]: notice },
+              sessionActivity: patchSessionActivity(state.sessionActivity, sessionID, {
+                sessionId: sessionID,
+                kind: 'thinking',
+                label: notice.message,
+              }),
+              thinking:
+                state.activeSessionId === sessionID ? { active: true } : state.thinking,
+            }));
+          }
         } else if (status.type === 'idle') {
           pipelineMark(sessionID, 'session:idle', { status: status.type });
           if (!findRunningCompaction(sessionID)) {
@@ -1900,6 +2110,7 @@ export const useMessageStore = create<MessageState>((set, get) => {
           loadingBySession: {},
           loading: false,
           sessionActivity: {},
+          sessionRunNotices: {},
           thinking: { active: false },
         }));
       }),
@@ -1927,13 +2138,30 @@ export const useMessageStore = create<MessageState>((set, get) => {
         }
         debugError('session.error', errMsg, { sessionID, event: EventType.SESSION_ERROR });
         if (sessionID) {
+          if (isRetryableProviderError(errMsg)) {
+            const notice = formatProviderErrorNotice(errMsg);
+            markSessionBusy(sessionID);
+            set((state) => ({
+              sessionRunNotices: { ...state.sessionRunNotices, [sessionID]: notice },
+              sessionActivity: patchSessionActivity(state.sessionActivity, sessionID, {
+                sessionId: sessionID,
+                kind: 'thinking',
+                label: notice.message,
+              }),
+              thinking:
+                state.activeSessionId === sessionID ? { active: true } : state.thinking,
+            }));
+            return;
+          }
           useSessionStore.getState().setSessionRunStatus(sessionID, 'error');
           set((state) => {
             const { [sessionID]: _removed, ...loadingBySession } = state.loadingBySession;
+            const { [sessionID]: _notice, ...sessionRunNotices } = state.sessionRunNotices;
             return {
               loadingBySession,
               loading: syncActiveLoading(state.activeSessionId, loadingBySession),
               sessionActivity: patchSessionActivity(state.sessionActivity, sessionID, null),
+              sessionRunNotices,
               thinking: state.activeSessionId === sessionID ? { active: false } : state.thinking,
             };
           });
@@ -2135,7 +2363,7 @@ export const useMessageStore = create<MessageState>((set, get) => {
           : props.reason === 'auto' || props.auto === true
             ? 'auto'
             : findRunningCompaction(sessionID)?.reason;
-      markSessionBusy(sessionID);
+      markSessionCompacting(sessionID, reason);
       upsertCachedCompaction(sessionID, {
         id,
         sessionId: sessionID,
@@ -2155,7 +2383,7 @@ export const useMessageStore = create<MessageState>((set, get) => {
       const text = typeof props.text === 'string' ? props.text : '';
       if (!sessionID || !text) return;
       const eventId = String(event.id ?? props.id ?? `compaction-${Date.now()}`);
-      markSessionBusy(sessionID);
+      markSessionCompacting(sessionID);
       ensureRunningCompaction(sessionID, eventId);
       patchCompactionCache(sessionID, (list) => {
         const running = list.find((c) => c.status === 'running');
@@ -2194,6 +2422,7 @@ export const useMessageStore = create<MessageState>((set, get) => {
         );
       });
       syncCompactionsToStore(sessionID);
+      resumeSessionAfterCompaction(sessionID);
     };
 
     const handleSessionCompacted = (event: Record<string, unknown>) => {
@@ -2208,6 +2437,8 @@ export const useMessageStore = create<MessageState>((set, get) => {
         ),
       );
       syncCompactionsToStore(sessionID);
+      sessionCompactingTimestamps.delete(sessionID);
+      resumeSessionAfterCompaction(sessionID);
     };
 
     const compactionStartedTypes = [
@@ -2235,6 +2466,19 @@ export const useMessageStore = create<MessageState>((set, get) => {
     unsubscribers.push(on(EventType.SESSION_COMPACTED, handleSessionCompacted));
 
     unsubscribers.push(
+      on('*', (event) => {
+        const eventType = typeof event.type === 'string' ? event.type : '';
+        if (eventType.includes('compaction.started')) {
+          handleCompactionStarted(event);
+        } else if (eventType.includes('compaction.delta')) {
+          handleCompactionDelta(event);
+        } else if (eventType.includes('compaction.ended')) {
+          handleCompactionEnded(event);
+        }
+      }),
+    );
+
+    unsubscribers.push(
       on(EventType.SESSION_UPDATED, (event) => {
         const props = extractEventPayload(event);
         const info = (props.info ?? props) as Record<string, unknown>;
@@ -2242,20 +2486,27 @@ export const useMessageStore = create<MessageState>((set, get) => {
         if (!sessionID) return;
         const time = info.time as Record<string, unknown> | undefined;
         const compactingAt = time?.compacting;
-        if (typeof compactingAt !== 'number') return;
-        if (findRunningCompaction(sessionID)) return;
-        markSessionBusy(sessionID);
-        upsertCachedCompaction(sessionID, {
-          id: `compaction-${compactingAt}`,
-          sessionId: sessionID,
-          turnUserMessageId: findLastUserMessageId(sessionID),
-          afterMessageId: findLastAssistantMessageId(sessionID),
-          reason: 'auto',
-          status: 'running',
-          streamText: '',
-          startedAt: compactingAt,
-        });
-        syncCompactionsToStore(sessionID);
+        if (typeof compactingAt === 'number') {
+          sessionCompactingTimestamps.set(sessionID, compactingAt);
+          if (findRunningCompaction(sessionID)) return;
+          markSessionCompacting(sessionID, 'auto');
+          upsertCachedCompaction(sessionID, {
+            id: `compaction-${compactingAt}`,
+            sessionId: sessionID,
+            turnUserMessageId: findLastUserMessageId(sessionID),
+            afterMessageId: findLastAssistantMessageId(sessionID),
+            reason: 'auto',
+            status: 'running',
+            streamText: '',
+            startedAt: compactingAt,
+          });
+          syncCompactionsToStore(sessionID);
+          return;
+        }
+        if (sessionCompactingTimestamps.has(sessionID) || findRunningCompaction(sessionID)) {
+          sessionCompactingTimestamps.delete(sessionID);
+          handleSessionCompacted(event);
+        }
       }),
     );
 

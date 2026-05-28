@@ -41,6 +41,7 @@ function mergeMemberDisplayStatus(
     if (baseStatus === 'completed' || baseStatus === 'waiting' || baseStatus === 'error') {
       return baseStatus;
     }
+    if (baseStatus === 'working') return 'completed';
     return 'idle';
   }
   return baseStatus;
@@ -236,21 +237,37 @@ export function resolveTeamMembersForDisplay(
   return suppressOrphanDuplicateSpawns([lead, ...workers], team);
 }
 
+/** During a run, hide completed sub-agents from prior turns; when idle, keep the last run visible. */
+export function filterSubAgentsForCurrentRun(
+  agents: SubAgentItem[],
+  runStartedAt?: number,
+): SubAgentItem[] {
+  if (!runStartedAt) return agents;
+  return agents.filter((agent) => {
+    if (agent.status === 'running' || agent.status === 'pending') return true;
+    if (agent.status !== 'completed') return false;
+    return agent.createdAt != null && agent.createdAt >= runStartedAt;
+  });
+}
+
 /** Task-tool subagents only (excludes team_spawn teammates). */
 export function resolveTaskSubAgentsForDisplay(
   team: TeamInfo | null,
   subAgents: SubAgentItem[],
   parentSessionId?: string,
+  runStartedAt?: number,
 ): SubAgentItem[] {
   if (!team) {
     const leadSessionId = parentSessionId ?? '';
-    return leadSessionId
+    const scoped = leadSessionId
       ? subAgents.filter((a) => a.parentSessionId === leadSessionId)
       : subAgents;
+    return filterSubAgentsForCurrentRun(scoped, runStartedAt);
   }
 
   const leadSessionId = parentSessionId ?? team.sessionId;
-  return scopedSubAgents(subAgents, leadSessionId).filter((agent) =>
+  const scoped = scopedSubAgents(subAgents, leadSessionId).filter((agent) =>
     isTaskSubagentChildSession(agent, team, leadSessionId),
   );
+  return filterSubAgentsForCurrentRun(scoped, runStartedAt);
 }

@@ -286,13 +286,21 @@ export function resolveCognitionLabel(options: {
   reasoningDone?: boolean;
   liveActivity?: SessionActivity | null;
   modelSupportsReasoning?: boolean;
+  isStreaming?: boolean;
 }): CognitionRailLabel {
-  const { reasoningText, reasoningDone, liveActivity, modelSupportsReasoning = false } = options;
+  const {
+    reasoningText,
+    reasoningDone,
+    liveActivity,
+    modelSupportsReasoning = false,
+    isStreaming = false,
+  } = options;
 
   if (liveActivity?.label === 'Preparing next step') return 'Preparing next step';
 
   const trimmed = reasoningText?.trim();
   if (modelSupportsReasoning && trimmed) {
+    if (isStreaming) return 'Thinking';
     if (reasoningDone || shouldPromoteReasoningToThought(trimmed)) return 'Thought';
     return 'Thinking';
   }
@@ -379,13 +387,27 @@ export function buildActivitySteps(options: BuildActivityStepsOptions): Activity
     isStreaming &&
     !hasRunningTool &&
     (thinkingActive || cognitionWaiting) &&
-    liveActivity?.label !== 'Compressing';
+    liveActivity?.label !== 'Compressing'
+    && liveActivity?.label !== '正在手动压缩上下文…'
+    && liveActivity?.label !== '正在自动压缩上下文…'
+    && !liveActivity?.label?.includes('压缩');
 
   const reasoningStreamingLive =
     showLiveCognition && !!liveReasoning && !reasoningDone;
 
   if (reasoning && hasAnyTools && !reasoningStreamingLive) {
-    upsertCognitionStep(steps, 'cognition-done', reasoning, 'done', 'Thought');
+    if (isStreaming && liveActivity?.label === 'Preparing next step') {
+      upsertCognitionStep(steps, 'cognition-live', reasoning, 'running', 'Preparing next step');
+    } else {
+      const label = isStreaming ? 'Thinking' : 'Thought';
+      upsertCognitionStep(
+        steps,
+        isStreaming ? 'cognition-live' : 'cognition-done',
+        reasoning,
+        isStreaming ? 'running' : 'done',
+        label,
+      );
+    }
   } else if (showLiveCognition) {
     if (liveActivity?.label === 'Preparing next step' && !liveReasoning) {
       upsertCognitionStep(steps, 'cognition-live', undefined, 'running', 'Preparing next step');
@@ -395,6 +417,7 @@ export function buildActivitySteps(options: BuildActivityStepsOptions): Activity
         reasoningDone,
         liveActivity,
         modelSupportsReasoning,
+        isStreaming,
       });
       upsertCognitionStep(steps, 'cognition-live', reasoning, 'running', label);
     }
@@ -415,7 +438,7 @@ export function buildActivitySteps(options: BuildActivityStepsOptions): Activity
     return steps;
   }
 
-  if (liveActivity.kind === 'thinking') {
+  if (liveActivity.kind === 'thinking' && !hasRunningTool) {
     return steps;
   }
 
@@ -444,6 +467,50 @@ export function buildActivitySteps(options: BuildActivityStepsOptions): Activity
 
 export const COGNITION_LABELS = new Set(['Thought', 'Exploring', 'Thinking', 'Preparing next step']);
 
+export function isBriefActivityLabel(label: string): boolean {
+  return label.endsWith(' briefly');
+}
+
+export function cognitionBaseLabel(label: string): string {
+  return label.replace(/ briefly$/, '');
+}
+
+export function finalizeAbortedActivityStep(step: ActivityStep): ActivityStep {
+  const baseLabel = cognitionBaseLabel(step.label);
+  if (COGNITION_LABELS.has(baseLabel) || baseLabel === 'Preparing next step') {
+    return {
+      ...step,
+      status: 'done',
+      label: `${baseLabel} briefly`,
+      body: undefined,
+      collapseWhenDone: true,
+    };
+  }
+  return {
+    ...step,
+    status: 'done',
+    body: undefined,
+    collapseWhenDone: true,
+  };
+}
+
+export function buildAbortTurnActivitySnapshot(
+  options: BuildTurnActivityStepsOptions,
+): ActivityStep[] {
+  const steps = buildTurnActivitySteps({ ...options, isStreaming: true });
+  const running = steps.filter((step) => step.status === 'running');
+  if (running.length > 0) {
+    return running.map(finalizeAbortedActivityStep);
+  }
+  const cognition = steps.find(
+    (step) =>
+      step.id === 'cognition-live'
+      || (COGNITION_LABELS.has(cognitionBaseLabel(step.label)) && step.status === 'running'),
+  );
+  if (cognition) return [finalizeAbortedActivityStep(cognition)];
+  return [];
+}
+
 export interface BuildTurnActivityStepsOptions {
   assistants: ChatMessage[];
   lastAssistantId?: string;
@@ -455,6 +522,8 @@ export interface BuildTurnActivityStepsOptions {
   compactionActivities?: CompactionActivity[];
   /** Hide Exploring/Thought draft while compressing. */
   hideStreamDraft?: boolean;
+  /** Hide activity-rail compaction rows while chat notice is shown. */
+  hideCompactionSteps?: boolean;
   modelSupportsReasoning?: boolean;
 }
 
@@ -470,6 +539,7 @@ export function buildTurnActivitySteps(options: BuildTurnActivityStepsOptions): 
     isStreaming,
     compactionActivities = [],
     hideStreamDraft = false,
+    hideCompactionSteps = false,
     modelSupportsReasoning = false,
   } = options;
 
@@ -498,9 +568,30 @@ export function buildTurnActivitySteps(options: BuildTurnActivityStepsOptions): 
     };
   };
 
+  if (isStreaming && assistants.length === 0) {
+    const bootstrapSteps = buildActivitySteps({
+      thinkingActive,
+      reasoningText,
+      reasoningDone,
+      liveActivity: liveActivity ?? null,
+      isStreaming: true,
+      modelSupportsReasoning,
+    });
+    for (const step of bootstrapSteps) upsert(step);
+  }
+
   const sortedCompactions = [...compactionActivities].sort((a, b) => a.startedAt - b.startedAt);
+  const runningCompactions = sortedCompactions.filter((c) => c.status === 'running');
+  const visibleCompactions = hideCompactionSteps
+    ? sortedCompactions.filter((c) => c.status !== 'running')
+    : runningCompactions.length > 1
+      ? [
+          ...sortedCompactions.filter((c) => c.status !== 'running'),
+          runningCompactions[runningCompactions.length - 1],
+        ]
+      : sortedCompactions;
   const compactionsByAnchor = new Map<string, CompactionActivity[]>();
-  for (const compaction of sortedCompactions) {
+  for (const compaction of visibleCompactions) {
     const key = compaction.afterMessageId ?? '__end__';
     const bucket = compactionsByAnchor.get(key) ?? [];
     bucket.push(compaction);
@@ -542,8 +633,24 @@ export function buildTurnActivitySteps(options: BuildTurnActivityStepsOptions): 
       reasoningDone,
       liveActivity,
       modelSupportsReasoning,
+      isStreaming,
     });
     upsert(cognitionStep('cognition-live', reasoning, 'running', label));
+  }
+
+  if (isStreaming && liveActivity) {
+    const liveSteps = buildActivitySteps({
+      thinkingActive,
+      reasoningText,
+      reasoningDone,
+      liveActivity,
+      isStreaming: true,
+      modelSupportsReasoning,
+    });
+    for (const step of liveSteps) {
+      if (step.status !== 'running') continue;
+      upsert(step);
+    }
   }
 
   return merged;

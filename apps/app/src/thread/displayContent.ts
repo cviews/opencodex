@@ -11,6 +11,24 @@ export function isTeammateBootstrapContent(content: string): boolean {
   );
 }
 
+/** Post-compaction session restore prompt — internal only, hide in chat UI. */
+export function isCompactionInternalContent(content: string): boolean {
+  if (!content) return false;
+  const trimmed = content.trim();
+  if (!trimmed) return false;
+  if (trimmed.includes('OMO_INTERNAL_INITIATOR')) return true;
+  if (/^\[restore checkpointed session agent configuration after compaction\]/i.test(trimmed)) {
+    return true;
+  }
+  if (
+    trimmed.includes('[restore checkpointed session agent configuration after compaction]')
+    && trimmed.includes('OMO_INTERNAL_INITIATOR')
+  ) {
+    return true;
+  }
+  return false;
+}
+
 const TEAM_RELAY_PREFIX_RE = /^\[Team message from ([^\]]+)\]:\s*/;
 
 /** Inbound team_message relay shown in the lead session as a synthetic user message. */
@@ -29,6 +47,11 @@ export function getTeamRelayDisplayBody(message: { content?: string; displayCont
   return parseTeamRelayMessage(raw)?.body ?? raw;
 }
 
+export function sessionContentHadTeamLaunch(content: string): boolean {
+  if (!content) return false;
+  return content.includes('[Agent Team:') || content.includes('--- 团队协调规则 ---');
+}
+
 /**
  * Strip expanded prompt/instruction blocks from user messages for chat display.
  * The full content is still sent to the AI — this only affects UI rendering.
@@ -36,6 +59,7 @@ export function getTeamRelayDisplayBody(message: { content?: string; displayCont
 export function sanitizeUserMessageDisplay(content: string): string {
   if (!content) return '';
   if (isTeammateBootstrapContent(content)) return '';
+  if (isCompactionInternalContent(content)) return '';
 
   let result = content;
 
@@ -43,6 +67,11 @@ export function sanitizeUserMessageDisplay(content: string): string {
   const teamBlockIdx = result.search(/\n\n\[Agent Team:/);
   if (teamBlockIdx >= 0) {
     result = result.slice(0, teamBlockIdx);
+  }
+
+  const soloBlockIdx = result.search(/\n\n\[Solo mode\]/);
+  if (soloBlockIdx >= 0) {
+    result = result.slice(0, soloBlockIdx);
   }
 
   if (result.startsWith('[Agent Team:')) {

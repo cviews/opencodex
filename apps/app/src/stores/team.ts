@@ -22,6 +22,8 @@ interface TeamState {
   setActiveTeams: (teams: TeamInfo[]) => void;
   setCurrentTeamBySession: (sessionId: string) => void;
   refreshCurrentTeam: () => Promise<void>;
+  clearTeamRunScope: (leadSessionId: string) => void;
+  deactivateSessionTeam: (sessionId: string) => void;
   setSelectedMemberId: (id: string | null) => void;
   handleTeamEvent: (event: TeamEvent) => void;
   updateMemberStatus: (teamId: string, memberId: string, status: TeamMember['status'], currentTask?: string) => void;
@@ -55,12 +57,18 @@ function mergeMemberOnRefresh(incoming: TeamMember, existing?: TeamMember): Team
   if (!existing) return incoming;
 
   let status = incoming.status;
+  const sessionRun = existing.sessionID
+    ? useSessionStore.getState().sessionRunStatus[existing.sessionID]
+    : undefined;
+
   if (existing.status === 'working' && (incoming.status === 'idle' || incoming.status === 'waiting')) {
-    status = 'working';
+    status = sessionRun === 'idle' || sessionRun === 'error' ? 'completed' : 'working';
   } else if (incoming.status === 'completed' || incoming.status === 'error') {
     status = incoming.status;
   } else if (existing.status === 'waiting' && incoming.status === 'idle') {
-    status = existing.status;
+    status = sessionRun === 'idle' ? 'completed' : existing.status;
+  } else if (sessionRun === 'idle' && existing.status === 'working') {
+    status = 'completed';
   }
 
   return {
@@ -237,6 +245,36 @@ export const useTeamStore = create<TeamState>((set, get) => ({
   },
 
   setSelectedMemberId: (id) => set({ selectedMemberId: id }),
+
+  clearTeamRunScope: (leadSessionId) => {
+    set((state) => {
+      if (!state.currentTeam || state.currentTeam.sessionId !== leadSessionId) {
+        return { selectedMemberId: null };
+      }
+      const lead = state.currentTeam.members.find((member) => member.role === 'lead');
+      return {
+        selectedMemberId: null,
+        currentTeam: {
+          ...state.currentTeam,
+          tasks: [],
+          members: lead ? [lead] : state.currentTeam.members.filter((member) => member.role === 'lead'),
+        },
+      };
+    });
+  },
+
+  deactivateSessionTeam: (sessionId) => {
+    try { localStorage.setItem(TEAM_MODE_KEY, 'false'); } catch { /* ignore */ }
+    set((state) => {
+      const matches = state.currentTeam?.sessionId === sessionId;
+      return {
+        teamModeEnabled: false,
+        selectedMemberId: null,
+        currentTeam: matches ? null : state.currentTeam,
+      };
+    });
+    invalidateTeamBySessionCache();
+  },
 
   handleTeamEvent: (event) => {
     invalidateTeamListCache();
@@ -498,7 +536,13 @@ export function getDisplayTeamMembers(
   parentSessionId?: string,
 ): TeamMember[] {
   if (!team) return [];
-  return resolveTeamMembersForDisplay(team, subAgents, parentSessionId ?? team.sessionId);
+  const sessionRunStatus = useSessionStore.getState().sessionRunStatus;
+  return resolveTeamMembersForDisplay(
+    team,
+    subAgents,
+    parentSessionId ?? team.sessionId,
+    sessionRunStatus,
+  );
 }
 
 /** Task-tool child sessions only (not team_spawn teammates). */
@@ -507,5 +551,9 @@ export function getDisplayTaskSubAgents(
   subAgents: ReturnType<typeof useSessionStore.getState>['subAgents'],
   parentSessionId?: string,
 ): ReturnType<typeof useSessionStore.getState>['subAgents'] {
-  return resolveTaskSubAgentsForDisplay(team, subAgents, parentSessionId ?? team?.sessionId);
+  const leadSessionId = parentSessionId ?? team?.sessionId;
+  const runStartedAt = leadSessionId
+    ? useSessionStore.getState().sessionRunStartedAt[leadSessionId]
+    : undefined;
+  return resolveTaskSubAgentsForDisplay(team, subAgents, leadSessionId, runStartedAt);
 }

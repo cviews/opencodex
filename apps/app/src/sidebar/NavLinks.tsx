@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import type { ReactNode } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import type { Session } from '@opencodex/types';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { t } from '../constants/i18n';
 import {
@@ -36,6 +38,7 @@ import {
   resolveTaskSubAgentsForDisplay,
   resolveTeamMembersForDisplay,
 } from '../services/teamDisplay';
+import { isRunSidebarHidden } from '../services/sessionRunDisplayLifecycle';
 import { buildSessionsNeedingUserActionForProject } from '../utils/sessionUserAction';
 import { ProjectSessionsList } from './ProjectSessionsList';
 import {
@@ -43,6 +46,10 @@ import {
   TeamMemberActivityText,
   TeamMemberStatusIndicator,
 } from '../components/teamMemberStatus';
+import type { TeamInfo } from '../types';
+import type { SubAgentItem } from '../types';
+import type { SessionActivity } from '../stores/message';
+import type { SessionRunStatus } from '../stores/session';
 
 type ProjectItem = { id: string; name: string; path: string };
 
@@ -52,6 +59,127 @@ interface NavItem {
   label: string;
   path?: string;
   onClick?: () => void;
+}
+
+function renderSessionSidebarExtra({
+  session,
+  activeSessionId,
+  teamModeEnabled,
+  currentTeam,
+  subAgents,
+  sessionRunStatus,
+  sessionRunStartedAt,
+  selectedSubAgentId,
+  selectedMemberId,
+  sessionActivity,
+}: {
+  session: Session;
+  activeSessionId: string;
+  teamModeEnabled: boolean;
+  currentTeam: TeamInfo | null;
+  subAgents: SubAgentItem[];
+  sessionRunStatus: Record<string, SessionRunStatus>;
+  sessionRunStartedAt: Record<string, number>;
+  selectedSubAgentId: string | null;
+  selectedMemberId: string | null;
+  sessionActivity: Record<string, SessionActivity>;
+}): ReactNode {
+  if (session.id !== activeSessionId) return null;
+  if (isRunSidebarHidden(session.id)) return null;
+
+  const isTeamSession = teamModeEnabled && currentTeam && (
+    currentTeam.sessionId === session.id
+    || currentTeam.members.some((member) => member.sessionID === session.id)
+  );
+  const taskAgents = isTeamSession && currentTeam
+    ? resolveTaskSubAgentsForDisplay(
+      currentTeam,
+      subAgents,
+      session.id,
+      sessionRunStartedAt[session.id],
+    )
+    : resolveTaskSubAgentsForDisplay(null, subAgents, session.id, sessionRunStartedAt[session.id]);
+
+  const renderTaskSubAgents = () => {
+    if (taskAgents.length === 0) return null;
+    return (
+      <div className="mt-0.5 flex flex-col gap-px border-l border-[#ECECEC] pl-2 dark:border-[#3A3A3A]">
+        {taskAgents.map((agent) => (
+          <div
+            key={agent.id}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (currentTeam && isTeammateChildSession(agent, currentTeam)) {
+                const members = resolveTeamMembersForDisplay(
+                  currentTeam,
+                  subAgents,
+                  session.id,
+                  sessionRunStatus,
+                );
+                const member = members.find((m) => m.sessionID === agent.sessionId);
+                if (member) {
+                  selectTeamMember(member.id);
+                  return;
+                }
+              }
+              selectSubAgent(agent.id);
+            }}
+            className={`flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[11px] transition-colors ${
+              selectedSubAgentId === agent.id
+                ? 'text-[#666666] dark:text-[#D4D4D4]'
+                : 'text-[#8A8A8A] hover:text-[#666666] dark:hover:text-[#B0B0B0]'
+            }`}
+          >
+            <span className="truncate flex-1">{displayNameFromSpawnTitle(agent.title)}</span>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  if (isTeamSession && currentTeam) {
+    const displayMembers = resolveTeamMembersForDisplay(
+      currentTeam,
+      subAgents,
+      session.id,
+      sessionRunStatus,
+    );
+    if (displayMembers.length === 0 && taskAgents.length === 0) return null;
+
+    return (
+      <div className="mt-0.5 flex flex-col gap-px">
+        {displayMembers.map((member) => {
+          const activityLabel = getMemberActivityLabel(
+            member.sessionID ? sessionActivity[member.sessionID] : undefined,
+          );
+          const isSelected = selectedMemberId === member.id;
+          return (
+            <div
+              key={member.id}
+              onClick={(e) => {
+                e.stopPropagation();
+                selectTeamMember(member.id);
+              }}
+              className={`flex min-w-0 cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[11px] transition-colors ${
+                isSelected
+                  ? 'text-[#666666] dark:text-[#D4D4D4]'
+                  : 'text-[#8A8A8A] hover:text-[#666666] dark:hover:text-[#B0B0B0]'
+              }`}
+            >
+              <TeamMemberStatusIndicator status={member.status} />
+              <span className="min-w-0 flex-1 truncate">{memberDisplayName(member, session.title)}</span>
+              {member.status === 'working' && (
+                <TeamMemberActivityText label={activityLabel ?? '执行中'} />
+              )}
+            </div>
+          );
+        })}
+        {renderTaskSubAgents()}
+      </div>
+    );
+  }
+
+  return renderTaskSubAgents();
 }
 
 export function NavLinks() {
@@ -154,7 +282,7 @@ export function ProjectSection() {
   const renameInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { restartWithDir, reconnecting, connected } = useSDK();
-  const { sessions, subAgents, activeSessionId, selectedSubAgentId, sessionRunStatus, byProject } =
+  const { sessions, subAgents, activeSessionId, selectedSubAgentId, sessionRunStatus, sessionRunStartedAt, byProject } =
     useSessionStore();
   const loadingBySession = useMessageStore((s) => s.loadingBySession);
   const sessionActivity = useMessageStore((s) => s.sessionActivity);
@@ -496,98 +624,28 @@ export function ProjectSection() {
                   onSessionClick={(sessionId) => handleSessionClick(p, sessionId)}
                   onSessionContextMenu={handleContextMenu}
                   formatTime={formatTime}
-                />
-
-                {isCurrent && projectActiveSessionId && (() => {
-                  const s = projectSessions.find((item) => item.id === projectActiveSessionId);
-                  if (!s) return null;
-                  const isTeamSession = teamModeEnabled && currentTeam && (
-                    currentTeam.sessionId === s.id
-                    || currentTeam.members.some((member) => member.sessionID === s.id)
-                  );
-                  const taskAgents = isTeamSession && currentTeam
-                    ? resolveTaskSubAgentsForDisplay(currentTeam, subAgents, s.id)
-                    : subAgents.filter((a) => a.parentSessionId === s.id);
-
-                  const renderTaskSubAgents = () => {
-                    if (taskAgents.length === 0) return null;
-                    return (
-                      <div className="ml-2 mt-1 flex flex-col gap-px border-l border-[#ECECEC] pl-2 dark:border-[#3A3A3A]">
-                        {taskAgents.map((agent) => (
-                          <div
-                            key={agent.id}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (currentTeam && isTeammateChildSession(agent, currentTeam)) {
-                                const members = resolveTeamMembersForDisplay(
-                                  currentTeam,
-                                  subAgents,
-                                  s.id,
-                                  sessionRunStatus,
-                                );
-                                const member = members.find((m) => m.sessionID === agent.sessionId);
-                                if (member) {
-                                  selectTeamMember(member.id);
-                                  return;
-                                }
-                              }
-                              selectSubAgent(agent.id);
-                            }}
-                            className={`flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[11px] transition-colors ${
-                              selectedSubAgentId === agent.id
-                                ? 'text-[#666666] dark:text-[#D4D4D4]'
-                                : 'text-[#8A8A8A] hover:text-[#666666] dark:hover:text-[#B0B0B0]'
-                            }`}
-                          >
-                            <span className="truncate flex-1">{displayNameFromSpawnTitle(agent.title)}</span>
-                          </div>
-                        ))}
-                      </div>
-                    );
-                  };
-
-                  if (isTeamSession && currentTeam) {
-                    const displayMembers = resolveTeamMembersForDisplay(
-                      currentTeam,
-                      subAgents,
-                      s.id,
-                      sessionRunStatus,
-                    );
-                    return (
-                      <div className="mt-1">
-                        {displayMembers.map((member) => {
-                          const activityLabel = getMemberActivityLabel(
-                            member.sessionID ? sessionActivity[member.sessionID] : undefined,
-                          );
-                          const isSelected = selectedMemberId === member.id;
-                          return (
-                            <div
-                              key={member.id}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                selectTeamMember(member.id);
-                              }}
-                              className={`flex min-w-0 cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-[11px] transition-colors ${
-                                isSelected
-                                  ? 'text-[#666666] dark:text-[#D4D4D4]'
-                                  : 'text-[#8A8A8A] hover:text-[#666666] dark:hover:text-[#B0B0B0]'
-                              }`}
-                            >
-                              <TeamMemberStatusIndicator status={member.status} />
-                              <span className="min-w-0 flex-1 truncate">{memberDisplayName(member, s.title)}</span>
-                              {member.status === 'working' && (
-                                <TeamMemberActivityText label={activityLabel ?? '执行中'} />
-                              )}
-                            </div>
-                          );
-                        })}
-                        {renderTaskSubAgents()}
-                      </div>
-                    );
+                  renderSessionExtra={
+                    isCurrent && projectActiveSessionId
+                      ? (session) => renderSessionSidebarExtra({
+                        session,
+                        activeSessionId: projectActiveSessionId,
+                        teamModeEnabled,
+                        currentTeam,
+                        subAgents,
+                        sessionRunStatus,
+                        sessionRunStartedAt,
+                        selectedSubAgentId,
+                        selectedMemberId,
+                        sessionActivity,
+                      })
+                      : undefined
                   }
-
-                  return renderTaskSubAgents();
-                })()}
+                  delegationContext={
+                    isCurrent
+                      ? { teamModeEnabled, currentTeam, subAgents }
+                      : undefined
+                  }
+                />
               </div>
             </div>
           );

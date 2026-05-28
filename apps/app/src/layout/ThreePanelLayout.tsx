@@ -73,9 +73,11 @@ export function ThreePanelLayout({ children, onSettingsClick }: { children?: Rea
       {/* Left resize handle */}
       {!panelState.leftCollapsed && (
         <div
-          className="w-[2px] cursor-col-resize bg-transparent hover:bg-[#2B8FFF] transition-colors"
+          className="relative z-20 flex w-2 shrink-0 items-stretch justify-center"
           onMouseDown={(e) => handleResize(e, 'left', setPanelState, panelState)}
-        />
+        >
+          <div className="w-[2px] cursor-col-resize bg-transparent transition-colors hover:bg-[#2B8FFF]" />
+        </div>
       )}
 
       {/* Center content */}
@@ -103,9 +105,11 @@ export function ThreePanelLayout({ children, onSettingsClick }: { children?: Rea
       {/* Right resize handle */}
       {!panelState.rightCollapsed && (
         <div
-          className="w-[2px] cursor-col-resize bg-transparent hover:bg-[#2B8FFF] transition-colors"
+          className="relative z-20 flex w-2 shrink-0 items-stretch justify-center"
           onMouseDown={(e) => handleResize(e, 'right', setPanelState, panelState)}
-        />
+        >
+          <div className="w-[2px] cursor-col-resize bg-transparent transition-colors hover:bg-[#2B8FFF]" />
+        </div>
       )}
 
       {/* Right panel */}
@@ -130,10 +134,14 @@ function handleResize(
   state: PanelState,
 ) {
   e.preventDefault();
+  e.stopPropagation();
   const startX = e.clientX;
   const startWidth = side === 'left' ? state.leftWidth : state.rightWidth;
+  document.body.style.cursor = 'col-resize';
+  document.body.style.userSelect = 'none';
 
   const onMouseMove = (moveEvent: MouseEvent) => {
+    moveEvent.preventDefault();
     const delta = side === 'left'
       ? moveEvent.clientX - startX
       : startX - moveEvent.clientX;
@@ -145,6 +153,8 @@ function handleResize(
   };
 
   const onMouseUp = () => {
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
     document.removeEventListener('mousemove', onMouseMove);
     document.removeEventListener('mouseup', onMouseUp);
   };

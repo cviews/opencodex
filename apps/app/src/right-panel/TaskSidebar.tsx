@@ -6,9 +6,14 @@ import { useSessionStore } from '../stores/session';
 import { useProjectStore } from '../stores/project';
 import { useTeamStore } from '../stores/team';
 import { opencodeSession, opencodeTeam } from '../services/opencodeAdapter';
-import { on, EventType } from '../sdk/eventRouter';
+import { on, EventType, extractEventPayload } from '../sdk/eventRouter';
 import { selectTeamMember, selectSubAgent } from '../services/executionView';
 import { memberDisplayName, resolveTaskSubAgentsForDisplay, resolveTeamMembersForDisplay } from '../services/teamDisplay';
+import {
+  isRunSidebarHidden,
+  maybeClearCompletedLeadRunDisplay,
+  setLeadRunPlanClearHandler,
+} from '../services/sessionRunDisplayLifecycle';
 import { useMessageStore } from '../stores/message';
 import {
   teamMemberBadgeStyle,
@@ -58,23 +63,77 @@ export function TaskSidebar() {
     setCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const { activeSessionId, subAgents, selectedSubAgentId, fetchSubAgents, sessions, sessionRunStatus } = useSessionStore();
+  const { activeSessionId, subAgents, selectedSubAgentId, fetchSubAgents, sessions, sessionRunStatus, sessionRunStartedAt } = useSessionStore();
   const sessionActivity = useMessageStore((s) => s.sessionActivity);
   const { currentTeam, setCurrentTeamBySession, teamModeEnabled, selectedMemberId, setActiveTeams } = useTeamStore();
 
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
+  const lastTodoUpdatedAtRef = useRef<Record<string, number>>({});
+  const subAgentPlanKeysByParentRef = useRef<Record<string, Set<string>>>({});
 
   const refreshPlans = useCallback(() => {
     const directory = useProjectStore.getState().currentProject.path?.trim() || undefined;
     const sid = activeSessionIdRef.current;
     if (!sid) return;
     opencodeSession.fetchSessionPlans(directory, [sid]).then((plans) => {
-      setSessionPlans((prev) => ({ ...prev, ...plans }));
+      setSessionPlans((prev) => {
+        const next = { ...prev };
+        if (plans[sid]) {
+          next[sid] = plans[sid];
+        } else {
+          delete next[sid];
+        }
+        return next;
+      });
     }).catch(() => {});
     opencodeSession.fetchSubAgentPlans(directory, [sid]).then((plans) => {
-      setSubAgentPlans((prev) => ({ ...prev, ...plans }));
+      setSubAgentPlans((prev) => {
+        const next = { ...prev };
+        const childIds = useSessionStore
+          .getState()
+          .subAgents.filter((agent) => agent.parentSessionId === sid)
+          .map((agent) => agent.id);
+        const tracked = subAgentPlanKeysByParentRef.current[sid] ?? new Set<string>();
+        for (const id of childIds) {
+          tracked.add(id);
+        }
+        subAgentPlanKeysByParentRef.current[sid] = tracked;
+        for (const id of tracked) {
+          if (plans[id]) {
+            next[id] = plans[id];
+          } else {
+            delete next[id];
+          }
+        }
+        return next;
+      });
     }).catch(() => {});
+  }, []);
+
+  const clearPlansForSession = useCallback((sessionID: string) => {
+    if (!sessionID) return;
+    setSessionPlans((prev) => {
+      if (!prev[sessionID]) return prev;
+      const next = { ...prev };
+      delete next[sessionID];
+      return next;
+    });
+    setSubAgentPlans((prev) => {
+      const tracked = subAgentPlanKeysByParentRef.current[sessionID];
+      const childIds = useSessionStore
+        .getState()
+        .subAgents.filter((agent) => agent.parentSessionId === sessionID)
+        .map((agent) => agent.id);
+      const keysToClear = new Set([...(tracked ?? []), ...childIds]);
+      if (keysToClear.size === 0) return prev;
+      const next = { ...prev };
+      for (const id of keysToClear) {
+        delete next[id];
+      }
+      subAgentPlanKeysByParentRef.current[sessionID] = new Set();
+      return next;
+    });
   }, []);
 
   const refreshTeam = useCallback(async () => {
@@ -91,6 +150,13 @@ export function TaskSidebar() {
   }, [setCurrentTeamBySession, setActiveTeams]);
 
   useEffect(() => {
+    setLeadRunPlanClearHandler((leadSessionId) => {
+      clearPlansForSession(leadSessionId);
+    });
+    return () => setLeadRunPlanClearHandler(null);
+  }, [clearPlansForSession]);
+
+  useEffect(() => {
     refreshPlans();
   }, [refreshPlans]);
 
@@ -101,10 +167,24 @@ export function TaskSidebar() {
   }, [activeSessionId, setCurrentTeamBySession]);
 
   useEffect(() => {
+    if (!activeSessionId) return;
+    const runStartedAt = sessionRunStartedAt[activeSessionId];
+    if (!runStartedAt) return;
+    clearPlansForSession(activeSessionId);
+    void refreshTeam();
+    fetchSubAgents();
+  }, [activeSessionId, sessionRunStartedAt, clearPlansForSession, refreshTeam, fetchSubAgents]);
+
+  useEffect(() => {
     const unsubs: Array<() => void> = [];
 
     unsubs.push(
-      on(EventType.TODO_UPDATED, () => {
+      on(EventType.TODO_UPDATED, (event) => {
+        const props = extractEventPayload(event as Record<string, unknown>);
+        const sessionID = String(props.sessionID ?? props.sessionId ?? '').trim();
+        if (sessionID) {
+          lastTodoUpdatedAtRef.current[sessionID] = Date.now();
+        }
         refreshPlans();
       }),
     );
@@ -149,7 +229,34 @@ export function TaskSidebar() {
     return () => {
       unsubs.forEach((unsub) => unsub());
     };
-  }, [refreshPlans, refreshTeam, fetchSubAgents]);
+  }, [refreshPlans, refreshTeam, fetchSubAgents, clearPlansForSession]);
+
+  const leadSessionIdle = activeSessionId
+    ? sessionRunStatus[activeSessionId] === 'idle' || sessionRunStatus[activeSessionId] === 'error'
+    : false;
+  const runSidebarHidden = activeSessionId ? isRunSidebarHidden(activeSessionId) : false;
+
+  useEffect(() => {
+    if (!activeSessionId || !leadSessionIdle || runSidebarHidden) return;
+    const timer = window.setTimeout(() => {
+      maybeClearCompletedLeadRunDisplay(activeSessionId, {
+        sessionPlans,
+        subAgentPlans,
+      });
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [
+    activeSessionId,
+    leadSessionIdle,
+    runSidebarHidden,
+    sessionPlans,
+    subAgentPlans,
+    currentTeam,
+    subAgents,
+    sessionRunStatus,
+  ]);
+
+  const currentRunStartedAt = activeSessionId ? sessionRunStartedAt[activeSessionId] : undefined;
 
   const sessionPlan = activeSessionId ? sessionPlans[activeSessionId] : null;
   const displayMembers = useMemo(
@@ -161,11 +268,11 @@ export function TaskSidebar() {
 
   const taskSubAgents = useMemo(
     () => (currentTeam && activeSessionId
-      ? resolveTaskSubAgentsForDisplay(currentTeam, subAgents, activeSessionId)
+      ? resolveTaskSubAgentsForDisplay(currentTeam, subAgents, activeSessionId, currentRunStartedAt)
       : activeSessionId
-        ? subAgents.filter((a) => a.parentSessionId === activeSessionId)
+        ? resolveTaskSubAgentsForDisplay(null, subAgents, activeSessionId, currentRunStartedAt)
         : []),
-    [currentTeam, subAgents, activeSessionId],
+    [currentTeam, subAgents, activeSessionId, currentRunStartedAt],
   );
 
   const teamWorkers = displayMembers.filter((m) => m.role !== 'lead');
@@ -193,9 +300,25 @@ export function TaskSidebar() {
     ? subAgentPlans[planAgentId] ?? planData
     : planData;
 
+  const planSessionId = planAgentId ?? activeSessionId;
+  const planUpdatedThisRun = !planSessionId
+    || !currentRunStartedAt
+    || Math.max(
+      lastTodoUpdatedAtRef.current[planSessionId] ?? 0,
+      activeSessionId ? (lastTodoUpdatedAtRef.current[activeSessionId] ?? 0) : 0,
+    ) >= currentRunStartedAt;
+
+  const planStillActive = !!planDataResolved && (
+    !currentRunStartedAt || planUpdatedThisRun
+  );
+
+  const displayTaskSubAgents = taskSubAgents;
+
   const sortedTasks = teamModeEnabled && currentTeam
     ? [...currentTeam.tasks].sort((a, b) => TASK_SORT_ORDER[a.status] - TASK_SORT_ORDER[b.status])
     : [];
+
+  const displayTasks = sortedTasks;
 
   const workingCount = teamModeEnabled && teamWorkers.length > 0
     ? teamWorkers.filter((m) => m.status === 'working').length
@@ -204,6 +327,14 @@ export function TaskSidebar() {
   const leadSessionTitle = activeSessionId
     ? sessions.find((session) => session.id === activeSessionId)?.title
     : undefined;
+
+  if (runSidebarHidden) {
+    return (
+      <div className="px-3 py-4 text-xs text-[#9A9A9A]">
+        {activeSessionId ? t('task_no_plan') : t('task_select_session')}
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-2 p-3">
@@ -265,7 +396,7 @@ export function TaskSidebar() {
             <TeamMemberStatusKeyframes />
 
             <div className="flex flex-col gap-0.5">
-              {sortedTasks.map((task) => {
+              {displayTasks.map((task) => {
                 const assignee = task.assigneeId
                   ? displayMembers.find((m) => m.id === task.assigneeId)
                   : undefined;
@@ -305,7 +436,7 @@ export function TaskSidebar() {
         </CollapsibleSection>
       )}
 
-      {planDataResolved ? (
+      {planStillActive ? (
         <CollapsibleSection
           title={
             selectedSubAgent
@@ -318,7 +449,7 @@ export function TaskSidebar() {
           onToggle={() => toggle('plan')}
         >
           <div className="flex flex-col gap-1 ml-2">
-            {planDataResolved.steps.map((step, idx) => (
+            {planDataResolved!.steps.map((step, idx) => (
               <PlanStep key={`${step.title}-${idx}`} title={step.title} status={step.status} />
             ))}
           </div>
@@ -329,14 +460,14 @@ export function TaskSidebar() {
         </div>
       )}
 
-      {taskSubAgents.length > 0 && (
+      {displayTaskSubAgents.length > 0 && (
         <CollapsibleSection
           title="Task 子 Agent"
           collapsed={false}
           onToggle={() => {}}
         >
           <div className="flex flex-col gap-1 ml-2">
-            {taskSubAgents.map((agent) => (
+            {displayTaskSubAgents.map((agent) => (
               <div
                 key={agent.id}
                 onClick={() => {

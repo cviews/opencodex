@@ -7,6 +7,11 @@ function memberStatusFromRunStatus(
 ): 'working' | 'idle' | 'completed' | 'error' | 'waiting' {
   if (status === 'running') return 'working';
   if (status === 'error') return 'error';
+  if (status === 'idle') {
+    if (currentStatus === 'working' || currentStatus === 'waiting') return 'completed';
+    if (currentStatus === 'completed') return 'completed';
+    return 'idle';
+  }
   if (currentStatus === 'completed' || currentStatus === 'waiting') return currentStatus;
   return 'idle';
 }

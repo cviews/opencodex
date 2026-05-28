@@ -52,8 +52,8 @@ import { createPendingSessionId } from '../utils/pendingSession';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { useSessionContext } from '../hooks/useSessionContext';
 
-import { opencodeSlash, opencodePermission, opencodeEngine, opencodeSession, buildTeamLaunchPrompt, opencodeProvider, opencodeTeam } from '../services/opencodeAdapter';
-import { getCachedTeamBySession } from '../services/teamSessionCache';
+import { opencodeSlash, opencodePermission, opencodeEngine, opencodeSession, buildSoloModePrompt, buildTeamLaunchPrompt, opencodeProvider, opencodeTeam } from '../services/opencodeAdapter';
+import { sessionContentHadTeamLaunch } from './displayContent';
 import { resetProjectScope } from '../services/projectScopeReset';
 import { debugError, debugLog, debugWarn } from '../utils/debugLog';
 import { deferAfterNativeDialog } from '../utils/deferAfterNativeDialog';
@@ -127,6 +127,7 @@ export function Composer({
   loading = false,
   restoreText,
   onRestoreHandled,
+  onSend,
   onAbort,
 }: {
   skillMode?: string | null;
@@ -136,6 +137,7 @@ export function Composer({
   loading?: boolean;
   restoreText?: string | null;
   onRestoreHandled?: () => void;
+  onSend?: () => void;
   onAbort?: () => void;
 }) {
   const permissionModes = opencodePermission.getPermissionModes();
@@ -166,7 +168,6 @@ export function Composer({
   const [pickingFolder, setPickingFolder] = useState(false);
   const [restartError, setRestartError] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [sendNotice, setSendNotice] = useState<string | null>(null);
   const [compressing, setCompressing] = useState(false);
 
   useEscapeKey(() => setRestartError(null), restartError !== null && !restarting);
@@ -189,12 +190,10 @@ export function Composer({
     try {
       setCompressing(true);
       setSendError(null);
-      setSendNotice('正在压缩上下文，请稍候...');
       if (sessionId) {
         useMessageStore.getState().startManualCompaction(sessionId);
       }
       await opencodeSlash.compressContext(sessionId ?? undefined);
-      setSendNotice(null);
       if (sessionId) {
         await useMessageStore.getState().loadMessages(sessionId);
         useMessageStore.getState().finishManualCompaction(sessionId);
@@ -202,7 +201,6 @@ export function Composer({
     } catch (err) {
       const message = err instanceof Error ? err.message : '压缩失败';
       debugError('compress.manual', err, { sessionId });
-      setSendNotice(null);
       setSendError(message);
       if (sessionId) {
         useMessageStore.getState().finishManualCompaction(sessionId, message);
@@ -419,6 +417,8 @@ export function Composer({
       return;
     }
 
+    onSend?.();
+
     const capturedText = text;
     const capturedAttachments = [...attachments];
     const modelRef =
@@ -483,7 +483,6 @@ export function Composer({
         undefined;
 
       const agent = planMode ? 'plan' : (agentName || 'OpenCode-Builder');
-      const teamState = useTeamStore.getState();
       let sessionTeam = null as Awaited<ReturnType<typeof opencodeTeam.fetchTeamBySession>>;
       let teamLaunch: Awaited<ReturnType<typeof opencodeTeam.prepareTeamLaunch>> | null = null;
       let outboundText = capturedText;
@@ -519,17 +518,18 @@ export function Composer({
           teamLaunch.mode,
           teamLaunch.runtimeTeamName,
         );
-      } else if (teamState.teamModeEnabled) {
-        if (teamState.currentTeam?.sessionId === sessionId) {
-          sessionTeam = teamState.currentTeam;
-        } else {
-          const cached = getCachedTeamBySession(sessionId);
-          if (cached !== undefined) {
-            sessionTeam = cached;
-            pipelineMark(sessionId, 'composer.team.bySession.cache', { hasSessionTeam: !!sessionTeam });
-          }
+      } else {
+        const teamState = useTeamStore.getState();
+        const hadBoundTeam = teamState.currentTeam?.sessionId === sessionId;
+        const historyHadTeam = useMessageStore.getState().messages.some(
+          (message) =>
+            message.role === 'user'
+            && sessionContentHadTeamLaunch(message.content ?? message.displayContent ?? ''),
+        );
+        useTeamStore.getState().deactivateSessionTeam(sessionId);
+        if (hadBoundTeam || historyHadTeam) {
+          outboundText = buildSoloModePrompt(capturedText);
         }
-        void opencodeTeam.prefetchTeamBySession(sessionId);
       }
 
       debugLog('composer.send', { agent, planMode, teamKey: teamKey ?? null });
@@ -551,15 +551,8 @@ export function Composer({
         if (teamLaunch.mode === 'create' || teamLaunch.mode === 'reclaim') {
           void useTeamStore.getState().spawnTeam(sessionId);
         } else {
+          useTeamStore.getState().setTeamModeEnabled(true);
           void useTeamStore.getState().setCurrentTeamBySession(sessionId);
-        }
-      } else if (teamState.teamModeEnabled) {
-        if (sessionTeam) {
-          void useTeamStore.getState().setCurrentTeamBySession(sessionId);
-        } else {
-          void opencodeTeam.prefetchTeamBySession(sessionId).then((team) => {
-            if (team) void useTeamStore.getState().setCurrentTeamBySession(sessionId!);
-          });
         }
       }
     } catch (e) {
@@ -587,7 +580,7 @@ export function Composer({
     }
 
     capturedAttachments.forEach((a) => URL.revokeObjectURL(a.previewUrl));
-  }, [attachments, planMode]);
+  }, [attachments, planMode, onSend]);
 
   const handleAddProject = useCallback(async () => {
     if (pickingFolder || restarting) return;
@@ -688,12 +681,6 @@ export function Composer({
               <div className="flex items-center gap-2 px-3 py-2 mb-2 rounded-md bg-[#FEF2F2] text-[#DC2626] text-sm">
                 <X className="w-4 h-4" />
                 <span>{sendError}</span>
-              </div>
-            )}
-            {compressing && sendNotice && (
-              <div className="flex items-center gap-2 px-3 py-2 mb-2 rounded-md bg-[#EFF6FF] text-[#2563EB] text-sm">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>{sendNotice}</span>
               </div>
             )}
             <div className="relative min-h-[48px]" ref={editorAreaRef}>

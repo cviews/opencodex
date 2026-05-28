@@ -491,14 +491,13 @@ function transformChildrenToSubAgents(children: Record<string, unknown>[], paren
     let status: SubAgentItem['status'];
     if (sessionRun === 'running') {
       status = 'running';
-    } else if (time.archived) {
-      status = 'completed';
-    } else if (sessionRun === 'error') {
+    } else if (sessionRun === 'idle' || sessionRun === 'error' || time.archived) {
       status = 'completed';
     } else {
       status = 'pending';
     }
     const sessionTitle = String(child.title ?? '');
+    const createdAt = typeof time.created === 'number' ? time.created : undefined;
     return {
       id: child.id as string ?? '',
       sessionId: child.id as string ?? '',
@@ -508,6 +507,7 @@ function transformChildrenToSubAgents(children: Record<string, unknown>[], paren
       status,
       /** Keep full session title for teammate vs task-subagent classification. */
       title: sessionTitle || displayName,
+      createdAt,
     };
   });
 }
@@ -2981,6 +2981,18 @@ export function buildTeamLaunchPrompt(
   return cleaned ? `${cleaned}\n\n${instruction}` : instruction;
 }
 
+/** Tell Lead to work solo when the user sends without @team (session may still have team context). */
+export function buildSoloModePrompt(userText: string): string {
+  const cleaned = userText.trim();
+  const instruction = [
+    '[Solo mode] 用户本条消息未 @ 团队，请在本 Lead 会话以普通单 Agent 模式处理：',
+    '- 禁止使用 team_spawn、team_message、team_broadcast、team_tasks、team_create 等团队协调工具',
+    '- 由 Lead 直接使用 read/grep/bash/edit 等常规工具完成请求',
+    '- 若需再次启用团队，用户会使用 @teamkey 明确发起',
+  ].join('\n');
+  return cleaned ? `${cleaned}\n\n${instruction}` : instruction;
+}
+
 function normalizeMemberStatus(raw: unknown): TeamInfo['members'][number]['status'] {
   switch (raw) {
     case 'running':
@@ -3105,6 +3117,7 @@ function childStatusToMemberStatus(child: Record<string, unknown>): TeamInfo['me
   const sessionRun = sessionId ? useSessionStore.getState().sessionRunStatus[sessionId] : undefined;
   if (sessionRun === 'running') return 'working';
   if (sessionRun === 'error') return 'error';
+  if (sessionRun === 'idle') return 'completed';
   const time = (child.time ?? {}) as Record<string, number>;
   if (time.compacting) return 'working';
   if (time.archived) return 'completed';
@@ -3161,12 +3174,19 @@ async function enrichTeamWithSessionChildren(team: TeamInfo): Promise<TeamInfo> 
 
       if (existingIdx >= 0) {
         const existing = members[existingIdx];
+        const sessionRun = useSessionStore.getState().sessionRunStatus[sessionID];
+        const resolvedStatus =
+          sessionRun === 'running'
+            ? 'working'
+            : sessionRun === 'idle' || sessionRun === 'error'
+              ? 'completed'
+              : status;
         members[existingIdx] = {
           ...existing,
           sessionID: existing.sessionID || sessionID,
           name: existing.name || name,
           agentId: existing.agentId || name,
-          status: status === 'idle' && existing.status !== 'idle' ? existing.status : status,
+          status: resolvedStatus,
         };
       } else {
         members.push({

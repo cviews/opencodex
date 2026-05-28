@@ -1,16 +1,37 @@
 import { useEffect, useState } from 'react';
 import { Loader2, MoreHorizontal } from 'lucide-react';
 import type { Session } from '@opencodex/types';
+import type { ReactNode } from 'react';
 import type { SessionActivity } from '../stores/message';
 import type { SessionRunStatus } from '../stores/session';
 import { stringResource } from '../i18n';
 import { useSettingsStore } from '../stores/settings';
-import { resolveSidebarSessionRunStatus } from '../utils/sidebarSessionStatus';
+import { resolveSidebarSessionRunStatus, type SidebarDelegationContext } from '../utils/sidebarSessionStatus';
 
 const SESSION_ROW_HEIGHT = 28;
 const SEE_MORE_ROW_HEIGHT = 24;
 const DEFAULT_COLLAPSED_ROWS = 4;
 const STATUS_ICON_BOX = 'flex h-[13px] w-[13px] shrink-0 items-center justify-center';
+
+function computeVisibleSessions(
+  sessions: Session[],
+  expanded: boolean,
+  activeSessionId: string | null,
+): Session[] {
+  if (expanded || sessions.length <= DEFAULT_COLLAPSED_ROWS) {
+    return sessions;
+  }
+
+  const head = sessions.slice(0, DEFAULT_COLLAPSED_ROWS);
+  if (!activeSessionId || head.some((session) => session.id === activeSessionId)) {
+    return head;
+  }
+
+  const active = sessions.find((session) => session.id === activeSessionId);
+  if (!active) return head;
+
+  return [...head.slice(0, DEFAULT_COLLAPSED_ROWS - 1), active];
+}
 
 function SessionRunStatusIcon({
   status,
@@ -64,6 +85,8 @@ export function ProjectSessionsList({
   onSessionClick,
   onSessionContextMenu,
   formatTime,
+  renderSessionExtra,
+  delegationContext,
 }: {
   sessions: Session[];
   activeSessionId: string | null;
@@ -74,6 +97,8 @@ export function ProjectSessionsList({
   onSessionClick: (sessionId: string) => void;
   onSessionContextMenu: (event: React.MouseEvent, sessionId: string) => void;
   formatTime: (dateStr: string) => string;
+  renderSessionExtra?: (session: Session) => ReactNode;
+  delegationContext?: SidebarDelegationContext;
 }) {
   const language = useSettingsStore((s) => s.language);
   const i18nLang = language === 'zh-CN' ? 'zh' : 'en';
@@ -91,34 +116,29 @@ export function ProjectSessionsList({
     return <div className="px-2 py-2 text-[11px] text-[#8A8A8A] dark:text-[#727272]">{emptyLabel}</div>;
   }
 
-  const collapsedVisibleRows = Math.min(sessions.length, DEFAULT_COLLAPSED_ROWS);
-  const hiddenCount = Math.max(0, sessions.length - DEFAULT_COLLAPSED_ROWS);
-  const visibleCount = expanded ? sessions.length : collapsedVisibleRows;
-  const visibleSessions = sessions.slice(0, visibleCount);
-  const collapsedClipHeight = collapsedVisibleRows * SESSION_ROW_HEIGHT;
+  const visibleSessions = computeVisibleSessions(sessions, expanded, activeSessionId);
+  const hiddenCount = expanded ? 0 : Math.max(0, sessions.length - visibleSessions.length);
 
   return (
     <div className="flex flex-col">
-      <div
-        className="overflow-hidden"
-        style={{ maxHeight: expanded ? undefined : collapsedClipHeight }}
-      >
-        <div className="flex flex-col">
-          {visibleSessions.map((session) => {
-            const isActive = activeSessionId === session.id;
-            const runStatus = resolveSidebarSessionRunStatus(
-              session.id,
-              sessionRunStatus,
-              loadingBySession,
-              sessionActivity,
-            );
-            const needsUserAction = sessionsNeedingUserAction.has(session.id);
-            const isRunning = runStatus === 'running';
-            const isError = runStatus === 'error';
+      <div className="flex flex-col">
+        {visibleSessions.map((session) => {
+          const isActive = activeSessionId === session.id;
+          const runStatus = resolveSidebarSessionRunStatus(
+            session.id,
+            sessionRunStatus,
+            loadingBySession,
+            sessionActivity,
+            delegationContext,
+          );
+          const needsUserAction = sessionsNeedingUserAction.has(session.id);
+          const isRunning = runStatus === 'running';
+          const isError = runStatus === 'error';
+          const extra = renderSessionExtra?.(session);
 
-            return (
+          return (
+            <div key={session.id} className="flex flex-col">
               <div
-                key={session.id}
                 onClick={() => onSessionClick(session.id)}
                 onContextMenu={(event) => onSessionContextMenu(event, session.id)}
                 className={`group flex items-center gap-2 px-2 py-1 rounded-md text-[12px] leading-5 cursor-pointer transition-colors ${
@@ -150,9 +170,10 @@ export function ProjectSessionsList({
                   <MoreHorizontal size={12} />
                 </button>
               </div>
-            );
-          })}
-        </div>
+              {extra ? <div className="ml-2 flex flex-col">{extra}</div> : null}
+            </div>
+          );
+        })}
       </div>
 
       {!expanded && hiddenCount > 0 ? (

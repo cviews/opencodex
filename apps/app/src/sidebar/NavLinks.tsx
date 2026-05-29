@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import type { Session } from '@opencodex/types';
 import { useEscapeKey } from '../hooks/useEscapeKey';
-import { t } from '../constants/i18n';
+import { useAppI18n } from '../i18n';
 import {
   MessageSquarePlus,
   Search,
@@ -29,7 +29,7 @@ import { useSDK } from '../sdk/provider';
 import { useProjectStore } from '../stores/project';
 import { useMessageStore } from '../stores/message';
 import { selectSession, selectTeamMember, selectSubAgent } from '../services/executionView';
-import { resetProjectScope } from '../services/projectScopeReset';
+import { activateProjectWorkspace } from '../services/projectScopeReset';
 import { isTopLevelSession, dedupeSessionsById } from '../utils/sessionHierarchy';
 import {
   displayNameFromSpawnTitle,
@@ -74,6 +74,7 @@ function renderSessionSidebarExtra({
   selectedSubAgentId,
   selectedMemberId,
   sessionActivity,
+  t,
 }: {
   session: Session;
   activeSessionId: string;
@@ -84,6 +85,7 @@ function renderSessionSidebarExtra({
   selectedSubAgentId: string | null;
   selectedMemberId: string | null;
   sessionActivity: Record<string, SessionActivity>;
+  t: (key: string) => string;
 }): ReactNode {
   if (session.id !== activeSessionId) return null;
   if (isRunSidebarHidden(session.id)) return null;
@@ -169,7 +171,7 @@ function renderSessionSidebarExtra({
               <TeamMemberStatusIndicator status={member.status} />
               <span className="min-w-0 flex-1 truncate">{memberDisplayName(member, session.title)}</span>
               {member.status === 'working' && (
-                <TeamMemberActivityText label={activityLabel ?? '执行中'} />
+                <TeamMemberActivityText label={activityLabel ?? t('sidebar.executing')} />
               )}
             </div>
           );
@@ -187,6 +189,7 @@ export function NavLinks() {
   const location = useLocation();
   const [searchModalOpen, setSearchModalOpen] = useState(false);
   const { hasProject } = useProjectStore();
+  const { t } = useAppI18n();
 
   const handleNewChat = () => {
     if (hasProject) {
@@ -202,25 +205,25 @@ export function NavLinks() {
     {
       id: 'new-chat',
       icon: <MessageSquarePlus size={16} />,
-      label: '新对话',
+      label: t('sidebar.newChat'),
       onClick: handleNewChat,
     },
     {
       id: 'search',
       icon: <Search size={16} />,
-      label: '搜索',
+      label: t('sidebar.search'),
       onClick: () => setSearchModalOpen(true),
     },
     {
       id: 'skills',
       icon: <Zap size={16} />,
-      label: '技能',
+      label: t('sidebar.skills'),
       path: '/skills',
     },
     {
       id: 'plugins',
       icon: <Puzzle size={16} />,
-      label: 'Mcp',
+      label: t('sidebar.mcp'),
       path: '/plugins',
     },
   ];
@@ -292,6 +295,7 @@ export function ProjectSection() {
   const { teamModeEnabled, currentTeam, selectedMemberId } = useTeamStore();
   const { projects, currentProject, setProject } = useProjectStore();
   const { removeProjectWithConfirm } = useRemoveProject();
+  const { t } = useAppI18n();
 
   useClickOutside([projectMenuRef], () => setProjectMenuId(null), projectMenuId !== null);
   useEscapeKey(() => setProjectMenuId(null), projectMenuId !== null);
@@ -403,18 +407,13 @@ export function ProjectSection() {
     setSwitchError(null);
     setSwitchingProjectId(project.id);
 
-    resetProjectScope(project.path);
-    setProject(project);
-    void useSessionStore.getState().refreshProjectRunStatus(project.path);
     navigate('/');
 
-    const { url, error } = await restartWithDir(project.path);
+    const { ok, error } = await activateProjectWorkspace(project, restartWithDir);
 
-    if (!url) {
-      resetProjectScope(previousProject.path);
-      setProject(previousProject);
-      await restartWithDir(previousProject.path);
-      setSwitchError(error || '启动 opencode 服务失败，请重试');
+    if (!ok) {
+      await activateProjectWorkspace(previousProject, restartWithDir);
+      setSwitchError(error || t('sidebar.switchProjectError'));
       setSwitchingProjectId(null);
       return;
     }
@@ -423,7 +422,7 @@ export function ProjectSection() {
       selectSession(sessionIdAfterSwitch);
     }
     setSwitchingProjectId(null);
-  }, [currentProject, reconnecting, restartWithDir, setProject, navigate]);
+  }, [currentProject, reconnecting, restartWithDir, setProject, navigate, t]);
 
   const handleProjectSwitch = (project: ProjectItem) => {
     void performSwitch(project);
@@ -531,7 +530,7 @@ export function ProjectSection() {
   return (
     <div className="flex min-h-0 flex-1 flex-col px-2 py-2">
       <div className="mb-2 shrink-0 px-2 text-[11px] font-medium uppercase tracking-wider text-[#8A8A8A] dark:text-[#727272]">
-        项目
+        {t('sidebar.project')}
       </div>
 
       <div className="scrollbar-sidebar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overflow-x-hidden">
@@ -568,7 +567,9 @@ export function ProjectSection() {
                   }`}
                 >
                   <FolderOpen size={14} className="shrink-0 opacity-70" />
-                  <span className="flex-1 truncate text-left">{p.name || p.path.split('/').pop() || '未选择项目'}</span>
+                  <span className="flex-1 truncate text-left">
+                    {p.name || p.path.split('/').pop() || t('sidebar.noProjectSelected')}
+                  </span>
                   {isSwitching && <Loader2 size={12} className="shrink-0 animate-spin text-[#8A8A8A]" />}
                 </button>
                 <button
@@ -579,7 +580,7 @@ export function ProjectSection() {
                   }}
                   disabled={!!switchingProjectId}
                   className="shrink-0 rounded p-1 text-[#A3A3A3] opacity-0 transition-opacity hover:text-[#666666] group-hover:opacity-100 focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
-                  aria-label="新对话"
+                  aria-label={t('sidebar.newChat')}
                 >
                   <Plus size={12} />
                 </button>
@@ -591,7 +592,7 @@ export function ProjectSection() {
                   }}
                   disabled={!!switchingProjectId}
                   className="mr-1 shrink-0 rounded p-1 text-[#A3A3A3] opacity-0 transition-opacity hover:text-[#666666] group-hover:opacity-100 focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
-                  aria-label="项目操作"
+                  aria-label={t('sidebar.projectActions')}
                 >
                   <MoreHorizontal size={12} />
                 </button>
@@ -608,7 +609,7 @@ export function ProjectSection() {
                     className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[#EC5F66] transition-colors hover:bg-[#FFF5F5]"
                   >
                     <Trash2 size={14} />
-                    <span>移除项目</span>
+                    <span>{t('sidebar.removeProject')}</span>
                   </button>
                 </div>
               )}
@@ -621,9 +622,10 @@ export function ProjectSection() {
                   loadingBySession={loadingBySession}
                   sessionActivity={sessionActivity}
                   sessionsNeedingUserAction={projectSessionsNeedingUserAction}
+                  projectPath={p.path}
                   onSessionClick={(sessionId) => handleSessionClick(p, sessionId)}
                   onSessionContextMenu={handleContextMenu}
-                  formatTime={formatTime}
+                  formatTime={(dateStr) => formatTime(dateStr, t)}
                   renderSessionExtra={
                     isCurrent && projectActiveSessionId
                       ? (session) => renderSessionSidebarExtra({
@@ -636,6 +638,7 @@ export function ProjectSection() {
                         selectedSubAgentId,
                         selectedMemberId,
                         sessionActivity,
+                        t,
                       })
                       : undefined
                   }
@@ -660,7 +663,7 @@ export function ProjectSection() {
             onClick={() => openRenameModal(contextMenu.sessionId)}
             className="flex items-center w-full px-3 py-1.5 text-sm text-[#1F1F1F] hover:bg-[#F5F5F5] transition-colors"
           >
-            重命名
+            {t('context.rename')}
           </button>
           <button
             onClick={async () => {
@@ -675,7 +678,7 @@ export function ProjectSection() {
             }}
             className="flex items-center w-full px-3 py-1.5 text-sm text-red-500 hover:bg-red-50 transition-colors"
           >
-            删除会话
+            {t('sidebar.deleteSession')}
           </button>
         </div>
       )}
@@ -685,7 +688,7 @@ export function ProjectSection() {
           <div className="absolute inset-0 bg-black/30" onClick={cancelRename} />
           <div className="relative bg-white rounded-xl shadow-xl w-[400px]" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between p-4 border-b border-[#E5E5E5]">
-              <h2 className="text-lg font-semibold text-[#1F1F1F]">重命名会话</h2>
+              <h2 className="text-lg font-semibold text-[#1F1F1F]">{t('sidebar.renameSession')}</h2>
               <button onClick={cancelRename} className="text-[#6B6B6B] hover:text-[#1F1F1F] p-1 transition-colors">
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -693,7 +696,7 @@ export function ProjectSection() {
               </button>
             </div>
             <div className="p-6">
-              <label className="block text-sm text-[#6B6B6B] mb-1.5">会话名称</label>
+              <label className="block text-sm text-[#6B6B6B] mb-1.5">{t('sidebar.sessionName')}</label>
               <input
                 ref={renameInputRef}
                 type="text"
@@ -713,13 +716,13 @@ export function ProjectSection() {
                     : 'text-[#9A9A9A] bg-[#F0F0F0] cursor-not-allowed'
                 }`}
               >
-                确定
+                {t('common.confirm')}
               </button>
               <button
                 onClick={cancelRename}
                 className="px-4 py-2 text-sm text-[#6B6B6B] border border-[#E5E5E5] rounded-lg hover:bg-[#F5F5F5] transition-colors"
               >
-                取消
+                {t('common.cancel')}
               </button>
             </div>
           </div>
@@ -734,7 +737,7 @@ export function ProjectSection() {
               onClick={() => setSwitchError(null)}
               className="mt-1 text-xs text-red-500 underline"
             >
-              关闭
+              {t('common.close')}
             </button>
           </div>
         </div>
@@ -743,27 +746,28 @@ export function ProjectSection() {
   );
 }
 
-function formatTime(dateStr: string): string {
+function formatTime(dateStr: string, t: (key: string) => string): string {
   const date = new Date(dateStr);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return '刚刚';
-  if (diffMin < 60) return `${diffMin} 分钟`;
+  if (diffMin < 1) return t('sidebar.time.justNow');
+  if (diffMin < 60) return t('sidebar.time.minutes').replace('{count}', String(diffMin));
   const diffHour = Math.floor(diffMin / 60);
-  if (diffHour < 24) return `${diffHour} 小时`;
+  if (diffHour < 24) return t('sidebar.time.hours').replace('{count}', String(diffHour));
   const diffDay = Math.floor(diffHour / 24);
-  return `${diffDay} 天`;
+  return t('sidebar.time.days').replace('{count}', String(diffDay));
 }
 
 export function SettingsButton({ onClick }: { onClick?: () => void }) {
+  const { t } = useAppI18n();
   return (
     <button
       onClick={onClick}
       className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-[#6B6B6B] hover:bg-[#F0F0F0] hover:text-[#1F1F1F] transition-colors w-full mt-auto mx-3 mb-3"
     >
       <Settings size={16} className="text-[#9A9A9A]" />
-      <span>设置</span>
+      <span>{t('sidebar.settings')}</span>
     </button>
   );
 }

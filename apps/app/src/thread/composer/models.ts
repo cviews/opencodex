@@ -1,11 +1,21 @@
 import { opencodeProvider, opencodeSettings } from '../../services/opencodeAdapter';
 import { loadModelProvidersFromConfig, resolveDefaultModelFromConfig } from '../../services/modelConfig';
 import { getClient } from '../../sdk/client';
-import { getCachedDefaultModelRef, setCachedDefaultModelRef } from './defaultModelRef';
+import {
+  getCachedDefaultModelRef,
+  setCachedDefaultModelRef,
+} from './defaultModelRef';
 import type { ModelItem, ProviderGroup } from '../../types';
 
 export type { ModelItem, ProviderGroup };
-export { getCachedDefaultModelRef, setCachedDefaultModelRef };
+export {
+  getCachedDefaultModelRef,
+  setCachedDefaultModelRef,
+  getSessionModelRef,
+  setSessionModelRef,
+  modelRefFromSessionModel,
+  resolveOutgoingModelRef,
+} from './defaultModelRef';
 
 let modelProviders: ProviderGroup[] = [];
 let modelById = new Map<string, ModelItem>();
@@ -125,11 +135,6 @@ export function modelSupportsReasoning(modelRef?: string | null): boolean {
   return false;
 }
 
-export function resolveOutgoingModelRef(explicitModelId?: string | null): string | null {
-  if (explicitModelId?.trim()) return explicitModelId.trim();
-  return getCachedDefaultModelRef();
-}
-
 async function syncReasoningFromSdkModelList(): Promise<void> {
   try {
     const client = getClient();
@@ -159,13 +164,13 @@ export function ensureModelCapabilitiesReady(): Promise<void> {
       if (configProviders.length > 0) {
         setModelProviders(configProviders);
       }
-      if (defaultModel) {
+      if (defaultModel && !getCachedDefaultModelRef()) {
         setCachedDefaultModelRef(defaultModel.id);
       }
 
       const [providers] = await Promise.all([
         opencodeProvider.fetchModelProviders(),
-        opencodeSettings.fetchDefaultModel(),
+        opencodeSettings.fetchDefaultModel({ updateCache: false }),
       ]);
       if (providers.length > 0) {
         setModelProviders(providers);

@@ -366,6 +366,16 @@ function writeSavedProjectDirectory(directory: string): void {
   } catch { /* ignore */ }
 }
 
+function clearSavedProjectDirectory(): void {
+  currentDirectory = undefined;
+  try {
+    const configPath = getProjectConfigPath();
+    if (fs.existsSync(configPath)) {
+      fs.unlinkSync(configPath);
+    }
+  } catch { /* ignore */ }
+}
+
 // --- OpenCode Server Management ---
 function startOpencodeServer(directory?: string): Promise<string> {
   if (startOpencodeInFlight) {
@@ -738,6 +748,11 @@ function setupIpc(): void {
     }
   });
 
+  ipcMain.handle('engine:clear-saved-directory', async () => {
+    clearSavedProjectDirectory();
+    return { ok: true };
+  });
+
   // Server URL access (for renderer to connect SDK)
   ipcMain.handle('server:url', async () => {
     return serverUrl || null;
@@ -751,6 +766,8 @@ function setupIpc(): void {
   ipcMain.handle('app:platform', async () => {
     return process.platform;
   });
+
+  ipcMain.handle('user:home', async () => os.homedir());
 
   ipcMain.handle('dialog:openFolder', async (event) => {
     if (folderDialogOpen) return null;

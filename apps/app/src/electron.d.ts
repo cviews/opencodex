@@ -3,10 +3,19 @@ export {};
 declare global {
   interface ElectronAPI {
     platform: string;
+    userHome: () => Promise<string>;
     appVersion: () => Promise<string>;
-    engineStart: (options?: { cwd?: string }) => Promise<void>;
-    engineStop: () => Promise<void>;
-    engineState: () => Promise<string>;
+    engineStart: (options?: { cwd?: string }) => Promise<{ state: string; url?: string; cwd?: string; error?: string }>;
+    engineStop: () => Promise<{ state: string }>;
+    engineState: () => Promise<{ state: string; url?: string; cwd?: string }>;
+    engineRestartWithDir: (directory: string) => Promise<{
+      state: string;
+      url?: string;
+      cwd?: string;
+      switched?: boolean;
+      error?: string;
+    }>;
+    engineClearSavedDirectory: () => Promise<{ ok: boolean }>;
     serverUrl: () => Promise<string>;
     openFolderDialog: () => Promise<string | null>;
     onTerminalToggle: (callback: () => void) => () => void;

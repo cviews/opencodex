@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
+import { useSettingsStore } from '../stores/settings';
 import { en } from './en';
 import { zh } from './zh';
 
@@ -60,4 +61,18 @@ export function useI18n(): I18nContextValue {
 export function stringResource(key: string, language: Language = 'en'): string {
   const value = translations[language]?.[key] ?? translations.en?.[key] ?? key;
   return value;
+}
+
+export function toAppLanguage(language: 'zh-CN' | 'en'): Language {
+  return language === 'zh-CN' ? 'zh' : 'en';
+}
+
+export function useAppI18n() {
+  const language = useSettingsStore((s) => s.language);
+  const i18nLang = toAppLanguage(language);
+  const t = useCallback(
+    (key: string) => stringResource(key, i18nLang),
+    [i18nLang],
+  );
+  return { t, language: i18nLang };
 }

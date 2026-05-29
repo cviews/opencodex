@@ -3,12 +3,20 @@ import { ChevronDown, Check, Search } from 'lucide-react';
 import { useClickOutside } from '../../hooks/useClickOutside';
 import { opencodeProvider, opencodeSettings } from '../../services/opencodeAdapter';
 import { useProviderStore } from '../../stores/provider';
+import { useSessionStore } from '../../stores/session';
 import type { ProviderOption } from '../../types';
 import { ProviderQuotaBadge } from './ProviderQuotaBadge';
 import { ProviderQuotaTooltip } from './ProviderQuotaTooltip';
 import { supportsProviderQuota } from './providerQuotaUtils';
-import { setModelProviders } from './models';
+import {
+  setModelProviders,
+  getCachedDefaultModelRef,
+  getSessionModelRef,
+  setSessionModelRef,
+  modelRefFromSessionModel,
+} from './models';
 import { setCachedDefaultModelRef } from './defaultModelRef';
+import { isPendingSessionId } from '../../utils/pendingSession';
 
 function useDropDirection(ref: React.RefObject<HTMLElement | null>, isOpen: boolean): boolean {
   const [dropUp, setDropUp] = useState(true);
@@ -45,6 +53,19 @@ function computeTooltipPosition(rect: DOMRect, tooltipWidth = 240, tooltipHeight
   return { top, left };
 }
 
+function applyModelRefToSelection(
+  modelRef: string,
+  loadedProviders: ProviderOption[],
+): { provider: ProviderOption; model: { id: string; label: string } } | null {
+  const [providerId, modelId] = modelRef.split('/', 2);
+  if (!providerId || !modelId) return null;
+  const provider = loadedProviders.find((p) => p.id === providerId);
+  if (!provider) return null;
+  const model = provider.models.find((m) => m.id === modelId) ?? provider.models[0];
+  if (!model) return null;
+  return { provider, model };
+}
+
 export function ProviderModelControls() {
   const [providers, setProviders] = useState<ProviderOption[]>(opencodeProvider.getProviders());
   const [selectedProvider, setSelectedProvider] = useState<ProviderOption | null>(null);
@@ -59,6 +80,11 @@ export function ProviderModelControls() {
 
   const providerStoreProviders = useProviderStore((s) => s.providers);
   const loadProviders = useProviderStore((s) => s.loadProviders);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const activeSession = useSessionStore((s) =>
+    s.activeSessionId ? s.sessions.find((session) => session.id === s.activeSessionId) : undefined,
+  );
+  const updateSession = useSessionStore((s) => s.updateSession);
   const providerMenuRef = useRef<HTMLDivElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const providerSearchRef = useRef<HTMLInputElement>(null);
@@ -87,34 +113,47 @@ export function ProviderModelControls() {
   }, [providerStoreProviders]);
 
   useEffect(() => {
-    opencodeProvider.fetchProviders().then((loadedProviders) => {
+    let cancelled = false;
+
+    void opencodeProvider.fetchProviders().then(async (loadedProviders) => {
+      if (cancelled) return;
       setProviders(loadedProviders);
-      opencodeSettings.fetchDefaultModel().then((defaultModel) => {
-        if (defaultModel && loadedProviders.length > 0) {
-          const [defaultProviderId] = defaultModel.id.split('/');
-          const matchedProvider = loadedProviders.find((p) => p.id === defaultProviderId);
-          if (matchedProvider) {
-            setSelectedProvider(matchedProvider);
-            setSelectedModel(
-              matchedProvider.models.find((m) => m.id === defaultModel.modelId) ?? matchedProvider.models[0] ?? null,
-            );
-          } else {
-            setSelectedProvider(loadedProviders[0] ?? null);
-            setSelectedModel(loadedProviders[0]?.models[0] ?? null);
-          }
-        } else {
-          setSelectedProvider(loadedProviders[0] ?? null);
-          setSelectedModel(loadedProviders[0]?.models[0] ?? null);
-        }
-      }).catch(() => {
-        setSelectedProvider(loadedProviders[0] ?? null);
-        setSelectedModel(loadedProviders[0]?.models[0] ?? null);
-      });
+
+      const sessionModelRef =
+        activeSessionId && !isPendingSessionId(activeSessionId)
+          ? getSessionModelRef(activeSessionId)
+          : null;
+      const sessionBoundRef = modelRefFromSessionModel(activeSession?.model);
+      const cachedRef = getCachedDefaultModelRef();
+      let initialRef = sessionModelRef ?? sessionBoundRef ?? cachedRef;
+
+      if (!initialRef) {
+        const defaultModel = await opencodeSettings.fetchDefaultModel({ updateCache: true });
+        initialRef = defaultModel?.id ?? null;
+      }
+
+      if (cancelled || loadedProviders.length === 0) return;
+
+      const applied = initialRef ? applyModelRefToSelection(initialRef, loadedProviders) : null;
+      if (applied) {
+        setSelectedProvider(applied.provider);
+        setSelectedModel(applied.model);
+        return;
+      }
+
+      setSelectedProvider(loadedProviders[0] ?? null);
+      setSelectedModel(loadedProviders[0]?.models[0] ?? null);
     }).catch(() => {
-      setSelectedProvider(null);
-      setSelectedModel(null);
+      if (!cancelled) {
+        setSelectedProvider(null);
+        setSelectedModel(null);
+      }
     });
-  }, [providerStoreProviders]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [providerStoreProviders, activeSessionId, activeSession?.model?.id, activeSession?.model?.providerID]);
 
   useEffect(() => {
     if (showProviderDropdown && providerSearchRef.current) {
@@ -131,6 +170,15 @@ export function ProviderModelControls() {
   const persistModel = async (provider: ProviderOption, model: { id: string; label: string }) => {
     const modelRef = `${provider.id}/${model.id}`;
     setCachedDefaultModelRef(modelRef);
+
+    const sessionId = useSessionStore.getState().activeSessionId;
+    if (sessionId && !isPendingSessionId(sessionId)) {
+      setSessionModelRef(sessionId, modelRef);
+      updateSession(sessionId, {
+        model: { id: model.id, providerID: provider.id },
+      });
+    }
+
     await opencodeProvider.setModel(provider.id, model.id);
     await opencodeSettings.setDefaultModel(modelRef);
   };

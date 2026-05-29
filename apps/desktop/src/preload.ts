@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
+  userHome: () => ipcRenderer.invoke('user:home'),
   appVersion: () => ipcRenderer.invoke('app:version'),
 
   // Engine management
@@ -10,6 +11,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   engineStop: () => ipcRenderer.invoke('engine:stop'),
   engineState: () => ipcRenderer.invoke('engine:state'),
   engineRestartWithDir: (directory: string) => ipcRenderer.invoke('engine:restart-with-dir', { directory }),
+  engineClearSavedDirectory: () => ipcRenderer.invoke('engine:clear-saved-directory'),
 
   // Server URL for SDK connection
   serverUrl: () => ipcRenderer.invoke('server:url'),

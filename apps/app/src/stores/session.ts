@@ -72,6 +72,7 @@ interface SessionState {
   fetchSessions: () => Promise<void>;
   fetchSubAgents: (parentSessionId?: string) => Promise<void>;
   clearSubAgentsForLeadSession: (leadSessionId: string) => void;
+  dropProjectSnapshot: (projectPath: string) => void;
   markRunArtifactCleared: (leadSessionId: string, kind: 'plan' | 'taskSubAgents' | 'team') => void;
   resetRunArtifactsCleared: (leadSessionId: string) => void;
   isRunArtifactCleared: (leadSessionId: string, kind: 'plan' | 'taskSubAgents' | 'team') => boolean;
@@ -689,6 +690,31 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } catch (e) {
       console.error('[SessionStore] fetchSubAgents failed:', e);
     }
+  },
+
+  dropProjectSnapshot: (projectPath) => {
+    const path = projectPath.trim();
+    if (!path) return;
+    set((state) => {
+      const snapshotKey = resolveProjectSnapshotKey(state.byProject, path);
+      if (!state.byProject[snapshotKey]) return state;
+      const { [snapshotKey]: _removed, ...byProject } = state.byProject;
+      const isCurrent =
+        normalizeDirectoryPath(resolveCurrentProjectPath(state)) === normalizeDirectoryPath(snapshotKey);
+      if (!isCurrent) {
+        return { byProject };
+      }
+      return {
+        byProject,
+        sessions: [],
+        subAgents: [],
+        activeSessionId: null,
+        selectedSubAgentId: null,
+        sessionRunStatus: {},
+        leadRunExcludedChildSessionIds: {},
+        runArtifactsCleared: {},
+      };
+    });
   },
 
   clearSubAgentsForLeadSession: (leadSessionId) => {

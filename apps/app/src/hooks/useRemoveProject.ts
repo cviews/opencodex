@@ -2,8 +2,14 @@ import { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { ProjectInfo } from '../types';
 import { useProjectStore } from '../stores/project';
+import { useSessionStore } from '../stores/session';
 import { useSDK } from '../sdk/provider';
-import { resetProjectScope } from '../services/projectScopeReset';
+import {
+  activateProjectWorkspace,
+  clearEngineProjectDirectory,
+  resetProjectScope,
+} from '../services/projectScopeReset';
+import { setEventInstanceDirectory } from '../sdk/eventDirectory';
 
 function projectDisplayName(project: ProjectInfo): string {
   return project.name || project.path.split('/').pop() || '此项目';
@@ -19,14 +25,22 @@ export function useRemoveProject() {
       return false;
     }
 
-    const { wasCurrent, newCurrent } = removeProject(project.id);
+    const { wasCurrent, newCurrent, removed } = removeProject(project.id);
+    const removedPath = removed?.path?.trim();
+    if (removedPath) {
+      useSessionStore.getState().dropProjectSnapshot(removedPath);
+    }
 
     if (wasCurrent && newCurrent.path) {
-      resetProjectScope(newCurrent.path);
-      setProject(newCurrent);
-      await restartWithDir(newCurrent.path);
+      const { ok } = await activateProjectWorkspace(newCurrent, restartWithDir);
+      if (!ok) {
+        setProject(newCurrent);
+        resetProjectScope(newCurrent.path);
+      }
     } else if (wasCurrent && !newCurrent.path) {
       resetProjectScope();
+      setEventInstanceDirectory(undefined);
+      await clearEngineProjectDirectory();
       navigate('/startup');
     }
 

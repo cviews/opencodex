@@ -47,14 +47,14 @@ import {
 import { containsPastableDisplayContent } from './displayTokens';
 import { AutocompleteMenu } from './composer/AutocompleteMenu';
 import { ProviderModelControls } from './composer/ProviderModelControls';
-import { resolveOutgoingModelRef, ensureModelCapabilitiesReady } from './composer/models';
+import { resolveOutgoingModelRef, ensureModelCapabilitiesReady, setSessionModelRef } from './composer/models';
 import { createPendingSessionId } from '../utils/pendingSession';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { useSessionContext } from '../hooks/useSessionContext';
 
 import { opencodeSlash, opencodePermission, opencodeEngine, opencodeSession, buildSoloModePrompt, buildTeamLaunchPrompt, opencodeProvider, opencodeTeam } from '../services/opencodeAdapter';
 import { sessionContentHadTeamLaunch } from './displayContent';
-import { resetProjectScope } from '../services/projectScopeReset';
+import { activateProjectWorkspace, registerNewProject } from '../services/projectScopeReset';
 import { debugError, debugLog, debugWarn } from '../utils/debugLog';
 import { deferAfterNativeDialog } from '../utils/deferAfterNativeDialog';
 import { pipelineMark, pipelineReset } from '../utils/pipelineTiming';
@@ -159,8 +159,6 @@ export function Composer({
   const [planMode, setPlanMode] = useState(false);
   const currentProject = useProjectStore((s) => s.currentProject);
   const projects = useProjectStore((s) => s.projects);
-  const addProject = useProjectStore((s) => s.addProject);
-  const setProject = useProjectStore((s) => s.setProject);
   const { restartWithDir } = useSDK();
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const sessionContext = useSessionContext();
@@ -421,10 +419,7 @@ export function Composer({
 
     const capturedText = text;
     const capturedAttachments = [...attachments];
-    const modelRef =
-      resolveOutgoingModelRef(
-        editorRef.current ? extractModelIdFromEditor(editorRef.current) : null,
-      ) ?? undefined;
+    const explicitModelId = editorRef.current ? extractModelIdFromEditor(editorRef.current) : null;
     const capturedDisplay = buildOutgoingDisplayContent(
       displayContent || capturedText,
       capturedAttachments,
@@ -438,6 +433,13 @@ export function Composer({
     let sessionId: string | null = useSessionStore.getState().activeSessionId;
     let pendingSessionId: string | null = null;
 
+    const resolveModelForSession = (targetSessionId: string | null) => {
+      const activeSession = targetSessionId
+        ? useSessionStore.getState().sessions.find((session) => session.id === targetSessionId)
+        : undefined;
+      return resolveOutgoingModelRef(explicitModelId, targetSessionId, activeSession?.model) ?? undefined;
+    };
+
     try {
       setSendError(null);
       const capabilitiesReady = ensureModelCapabilitiesReady();
@@ -445,11 +447,12 @@ export function Composer({
       if (!sessionId) {
         pendingSessionId = createPendingSessionId();
         sessionId = pendingSessionId;
+        const pendingModelRef = resolveModelForSession(sessionId);
         useSessionStore.getState().setActiveSession(sessionId);
         useMessageStore.getState().setActiveSession(sessionId);
         useMessageStore.getState().beginOutgoingMessage(sessionId, {
           displayContent: capturedDisplay,
-          modelRef,
+          modelRef: pendingModelRef,
         });
 
         const newSession = await opencodeSession.createSession();
@@ -468,19 +471,20 @@ export function Composer({
         });
         sessionId = newSession.id;
         pendingSessionId = null;
+        if (pendingModelRef) {
+          setSessionModelRef(sessionId, pendingModelRef);
+        }
       } else {
+        const sessionModelRef = resolveModelForSession(sessionId);
         useMessageStore.getState().setActiveSession(sessionId);
         useMessageStore.getState().beginOutgoingMessage(sessionId, {
           displayContent: capturedDisplay,
-          modelRef,
+          modelRef: sessionModelRef,
         });
       }
 
       await capabilitiesReady;
-      const resolvedModelRef =
-        modelRef ??
-        resolveOutgoingModelRef(null) ??
-        undefined;
+      const resolvedModelRef = resolveModelForSession(sessionId);
 
       const agent = planMode ? 'plan' : (agentName || 'OpenCode-Builder');
       let sessionTeam = null as Awaited<ReturnType<typeof opencodeTeam.fetchTeamBySession>>;
@@ -603,41 +607,27 @@ export function Composer({
       setRestarting(true);
       setRestartError(null);
 
-      const { url, error } = await restartWithDir(newProject.path);
-      if (!url) {
-        setRestarting(false);
+      const { ok, error } = await registerNewProject(newProject, restartWithDir);
+      if (!ok) {
         setRestartError(error || '启动 opencode 服务失败，请重试');
-        return;
       }
-
-      addProject(newProject);
-      setProject(newProject);
-      resetProjectScope(newProject.path);
-      useSessionStore.getState().setActiveSession(null);
-      useMessageStore.getState().setActiveSession(null);
       setRestarting(false);
     } finally {
       setPickingFolder(false);
     }
-  }, [restartWithDir, addProject, setProject, pickingFolder, restarting]);
+  }, [restartWithDir, pickingFolder, restarting]);
 
   const handleProjectSwitch = useCallback(async (project: ProjectInfo) => {
     setShowProjectDropdown(false);
     setRestarting(true);
     setRestartError(null);
 
-    resetProjectScope(project.path);
-    setProject(project);
-
-    const { url, error } = await restartWithDir(project.path);
-    if (!url) {
-      setRestarting(false);
+    const { ok, error } = await activateProjectWorkspace(project, restartWithDir);
+    if (!ok) {
       setRestartError(error || '启动 opencode 服务失败，请重试');
-      return;
     }
-
     setRestarting(false);
-  }, [restartWithDir, setProject]);
+  }, [restartWithDir]);
 
   const onChange = useCallback((_editorState: unknown, editor: LexicalEditor) => {
     editorRef.current = editor;

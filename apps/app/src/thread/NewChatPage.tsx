@@ -8,14 +8,14 @@ import { useEscapeKey } from '../hooks/useEscapeKey';
 import { opencodeSession } from '../services/opencodeAdapter';
 import { useSDK } from '../sdk/provider';
 import { deferAfterNativeDialog } from '../utils/deferAfterNativeDialog';
-import { resetProjectScope } from '../services/projectScopeReset';
+import { activateProjectWorkspace, registerNewProject } from '../services/projectScopeReset';
 import { useMessageStore } from '../stores/message';
 
 type Project = { id: string; name: string; path: string };
 
 export function NewChatPage({ standalone }: { standalone?: boolean }) {
   const navigate = useNavigate();
-  const { projects, addProject, setProject } = useProjectStore();
+  const { projects } = useProjectStore();
   const { restartWithDir } = useSDK();
   const [menuProjectId, setMenuProjectId] = useState<string | null>(null);
   const [restarting, setRestarting] = useState(false);
@@ -37,22 +37,17 @@ export function NewChatPage({ standalone }: { standalone?: boolean }) {
     setRestartError(null);
     setLastAttempt({ project, isNew });
 
-    const { url, error } = await restartWithDir(project.path);
+    const { ok, error } = isNew
+      ? await registerNewProject(project, restartWithDir, { prepareNewChat: true })
+      : await activateProjectWorkspace(project, restartWithDir);
 
-    if (!url) {
+    if (!ok) {
       setRestarting(false);
       setRestartError(error || '启动 opencode 服务失败，请重试');
       return;
     }
 
     if (isNew) {
-      addProject(project);
-    }
-    resetProjectScope(project.path);
-    setProject(project);
-    if (isNew) {
-      useSessionStore.getState().setActiveSession(null);
-      useMessageStore.getState().setActiveSession(null);
       const created = await opencodeSession.createSession(project.path);
       if (created) {
         useSessionStore.getState().addSession(created);

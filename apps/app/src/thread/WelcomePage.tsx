@@ -7,13 +7,15 @@ import { useNavigate } from 'react-router-dom';
 import { useClickOutside } from '../hooks/useClickOutside';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { deferAfterNativeDialog } from '../utils/deferAfterNativeDialog';
+import { useSDK } from '../sdk/provider';
+import { registerNewProject } from '../services/projectScopeReset';
 import type { ProjectInfo } from '../types';
 
 export function WelcomePage({ skillMode }: { projectName?: string; skillMode?: string | null }) {
   const navigate = useNavigate();
   const [projects, setProjects] = useState<ProjectInfo[]>(opencodeProject.getProjects());
   const [currentProjectName, setCurrentProjectName] = useState<string>(opencodeProject.getCurrentProject().name ?? '');
-  const { addProject, setProject } = useProjectStore();
+  const { restartWithDir } = useSDK();
   const [menuProjectId, setMenuProjectId] = useState<string | null>(null);
   const [pickingFolder, setPickingFolder] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -53,8 +55,9 @@ export function WelcomePage({ skillMode }: { projectName?: string; skillMode?: s
           const pathParts = folder.split('/');
           const name = pathParts[pathParts.length - 1] || folder;
           const newProject = { id: Date.now().toString(), name, path: folder };
-          addProject(newProject);
-          setProject(newProject);
+          const { ok } = await registerNewProject(newProject, restartWithDir);
+          if (!ok) return;
+          navigate('/');
         }
       } finally {
         setPickingFolder(false);
@@ -69,8 +72,9 @@ export function WelcomePage({ skillMode }: { projectName?: string; skillMode?: s
     if (files && files.length > 0) {
       const path = files[0].webkitRelativePath.split('/')[0] || files[0].name;
       const newProject = { id: Date.now().toString(), name: path, path };
-      addProject(newProject);
-      setProject(newProject);
+      void registerNewProject(newProject, restartWithDir).then(({ ok }) => {
+        if (ok) navigate('/');
+      });
     }
     e.target.value = '';
   };

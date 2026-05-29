@@ -4,25 +4,39 @@ import type { Session } from '@opencodex/types';
 import type { ReactNode } from 'react';
 import type { SessionActivity } from '../stores/message';
 import type { SessionRunStatus } from '../stores/session';
-import { stringResource } from '../i18n';
-import { useSettingsStore } from '../stores/settings';
+import { useSidebarSessionTooltip } from '../components/SidebarSessionTooltip';
+import { useAppI18n } from '../i18n';
 import { resolveSidebarSessionRunStatus, type SidebarDelegationContext } from '../utils/sidebarSessionStatus';
+
+function sessionRowTitle(session: Session, unnamedLabel: string): string {
+  return session.title?.trim() || session.cwd?.split('/').pop() || unnamedLabel;
+}
+
+function sessionRowDirectory(session: Session, projectPath: string): string {
+  return (
+    session.directory?.trim()
+    || session.path?.trim()
+    || session.cwd?.trim()
+    || projectPath.trim()
+  );
+}
 
 const SESSION_ROW_HEIGHT = 28;
 const SEE_MORE_ROW_HEIGHT = 24;
 const DEFAULT_COLLAPSED_ROWS = 4;
+const LOAD_MORE_BATCH = 4;
 const STATUS_ICON_BOX = 'flex h-[13px] w-[13px] shrink-0 items-center justify-center';
 
 function computeVisibleSessions(
   sessions: Session[],
-  expanded: boolean,
+  visibleLimit: number,
   activeSessionId: string | null,
 ): Session[] {
-  if (expanded || sessions.length <= DEFAULT_COLLAPSED_ROWS) {
+  if (sessions.length <= visibleLimit) {
     return sessions;
   }
 
-  const head = sessions.slice(0, DEFAULT_COLLAPSED_ROWS);
+  const head = sessions.slice(0, visibleLimit);
   if (!activeSessionId || head.some((session) => session.id === activeSessionId)) {
     return head;
   }
@@ -30,20 +44,22 @@ function computeVisibleSessions(
   const active = sessions.find((session) => session.id === activeSessionId);
   if (!active) return head;
 
-  return [...head.slice(0, DEFAULT_COLLAPSED_ROWS - 1), active];
+  return [...head.slice(0, visibleLimit - 1), active];
 }
 
 function SessionRunStatusIcon({
   status,
   needsUserAction,
+  t,
 }: {
   status?: SessionRunStatus;
   needsUserAction?: boolean;
+  t: (key: string) => string;
 }) {
   if (needsUserAction) {
     return (
       <span className={STATUS_ICON_BOX}>
-        <span className="h-2 w-2 rounded-full bg-[#D4A017]" title="需要确认" />
+        <span className="h-2 w-2 rounded-full bg-[#D4A017]" title={t('sidebar.status.needsConfirm')} />
       </span>
     );
   }
@@ -57,20 +73,20 @@ function SessionRunStatusIcon({
   if (status === 'error') {
     return (
       <span className={STATUS_ICON_BOX}>
-        <span className="h-2 w-2 rounded-full bg-[#C75450]" title="执行出错" />
+        <span className="h-2 w-2 rounded-full bg-[#C75450]" title={t('sidebar.status.error')} />
       </span>
     );
   }
   if (status === 'idle') {
     return (
       <span className={STATUS_ICON_BOX}>
-        <span className="h-2 w-2 rounded-full bg-[#2B8FFF]" title="已完成" />
+        <span className="h-2 w-2 rounded-full bg-[#2B8FFF]" title={t('sidebar.status.completed')} />
       </span>
     );
   }
   return (
     <span className={STATUS_ICON_BOX}>
-      <span className="h-2 w-2 rounded-full bg-[#B8B8B8] dark:bg-[#666666]" title="未运行" />
+      <span className="h-2 w-2 rounded-full bg-[#B8B8B8] dark:bg-[#666666]" title={t('sidebar.status.notRunning')} />
     </span>
   );
 }
@@ -87,6 +103,7 @@ export function ProjectSessionsList({
   formatTime,
   renderSessionExtra,
   delegationContext,
+  projectPath,
 }: {
   sessions: Session[];
   activeSessionId: string | null;
@@ -99,25 +116,28 @@ export function ProjectSessionsList({
   formatTime: (dateStr: string) => string;
   renderSessionExtra?: (session: Session) => ReactNode;
   delegationContext?: SidebarDelegationContext;
+  projectPath: string;
 }) {
-  const language = useSettingsStore((s) => s.language);
-  const i18nLang = language === 'zh-CN' ? 'zh' : 'en';
-  const seeMoreLabel = stringResource('sidebar.seeMore', i18nLang);
-  const emptyLabel = stringResource('sidebar.noChats', i18nLang);
+  const { show: showSessionTooltip, hide: hideSessionTooltip, portal: sessionTooltipPortal } =
+    useSidebarSessionTooltip();
+  const { t } = useAppI18n();
+  const seeMoreLabel = t('sidebar.seeMore');
+  const emptyLabel = t('sidebar.noChats');
+  const unnamedLabel = t('sidebar.unnamed');
 
-  const [expanded, setExpanded] = useState(false);
+  const [visibleLimit, setVisibleLimit] = useState(DEFAULT_COLLAPSED_ROWS);
   const sessionIdsKey = sessions.map((session) => session.id).join('\0');
 
   useEffect(() => {
-    setExpanded(false);
+    setVisibleLimit(DEFAULT_COLLAPSED_ROWS);
   }, [sessionIdsKey]);
 
   if (sessions.length === 0) {
     return <div className="px-2 py-2 text-[11px] text-[#8A8A8A] dark:text-[#727272]">{emptyLabel}</div>;
   }
 
-  const visibleSessions = computeVisibleSessions(sessions, expanded, activeSessionId);
-  const hiddenCount = expanded ? 0 : Math.max(0, sessions.length - visibleSessions.length);
+  const visibleSessions = computeVisibleSessions(sessions, visibleLimit, activeSessionId);
+  const hiddenCount = Math.max(0, sessions.length - visibleSessions.length);
 
   return (
     <div className="flex flex-col">
@@ -141,6 +161,13 @@ export function ProjectSessionsList({
               <div
                 onClick={() => onSessionClick(session.id)}
                 onContextMenu={(event) => onSessionContextMenu(event, session.id)}
+                onMouseEnter={(event) => {
+                  showSessionTooltip(event.currentTarget, {
+                    title: sessionRowTitle(session, unnamedLabel),
+                    projectPath: sessionRowDirectory(session, projectPath),
+                  });
+                }}
+                onMouseLeave={hideSessionTooltip}
                 className={`group flex items-center gap-2 px-2 py-1 rounded-md text-[12px] leading-5 cursor-pointer transition-colors ${
                   isActive
                     ? 'bg-[#ECECEC]/90 text-[#3D3D3D] dark:bg-[#3A3A3A]/80 dark:text-[#D4D4D4]'
@@ -152,9 +179,9 @@ export function ProjectSessionsList({
                 } ${isRunning && !isActive ? 'font-medium' : ''}`}
                 style={{ minHeight: SESSION_ROW_HEIGHT }}
               >
-                <SessionRunStatusIcon status={runStatus} needsUserAction={needsUserAction} />
-                <span className="flex-1 truncate">
-                  {session.title || session.cwd?.split('/').pop() || '未命名'}
+                <SessionRunStatusIcon status={runStatus} needsUserAction={needsUserAction} t={t} />
+                <span className="min-w-0 flex-1 truncate">
+                  {sessionRowTitle(session, unnamedLabel)}
                 </span>
                 <span className="text-[10px] text-[#A3A3A3] dark:text-[#666666] opacity-0 group-hover:opacity-100 transition-opacity">
                   {session.updatedAt ? formatTime(session.updatedAt) : ''}
@@ -176,27 +203,18 @@ export function ProjectSessionsList({
         })}
       </div>
 
-      {!expanded && hiddenCount > 0 ? (
+      {hiddenCount > 0 ? (
         <button
           type="button"
-          onClick={() => setExpanded(true)}
-          className="mt-0.5 px-2 py-1 text-left text-[11px] text-[#8A8A8A] hover:text-[#666666] dark:text-[#727272] dark:hover:text-[#A8A8A8] transition-colors"
+          onClick={() => setVisibleLimit((prev) => Math.min(prev + LOAD_MORE_BATCH, sessions.length))}
+          className="mt-0.5 flex w-full items-center gap-2 px-2 py-1 text-left text-[11px] text-[#8A8A8A] hover:text-[#666666] dark:text-[#727272] dark:hover:text-[#A8A8A8] transition-colors"
           style={{ minHeight: SEE_MORE_ROW_HEIGHT }}
         >
-          {seeMoreLabel.replace('{count}', String(hiddenCount))}
+          <span className={`${STATUS_ICON_BOX} opacity-0`} aria-hidden />
+          <span>{seeMoreLabel.replace('{count}', String(hiddenCount))}</span>
         </button>
       ) : null}
-
-      {expanded && hiddenCount > 0 ? (
-        <button
-          type="button"
-          onClick={() => setExpanded(false)}
-          className="mt-0.5 px-2 py-1 text-left text-[11px] text-[#8A8A8A] hover:text-[#666666] dark:text-[#727272] dark:hover:text-[#A8A8A8] transition-colors"
-          style={{ minHeight: SEE_MORE_ROW_HEIGHT }}
-        >
-          {i18nLang === 'zh' ? '收起' : 'Show less'}
-        </button>
-      ) : null}
+      {sessionTooltipPortal}
     </div>
   );
 }

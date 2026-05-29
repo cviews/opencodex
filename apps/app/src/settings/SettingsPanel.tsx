@@ -11,7 +11,7 @@ import { useSettingsStore } from '../stores/settings';
 import { EditorSelector } from '../components/EditorSelector';
 import { CircularProgress } from '../components/CircularProgress';
 import { QuotaDisplay } from '../components/QuotaDisplay';
-import { useI18n } from '../constants/i18n';
+import { useAppI18n } from '../i18n';
 import { getBuiltinPopularProviders } from '../constants/builtin';
 import { ApiKeyModal } from './ApiKeyModal';
 import { CustomProviderModal } from './CustomProviderModal';
@@ -24,6 +24,8 @@ import { ProjectConfigModal } from './ProjectConfigModal';
 import { useClickOutside } from '../hooks/useClickOutside';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { useRemoveProject } from '../hooks/useRemoveProject';
+import { useSDK } from '../sdk/provider';
+import { registerNewProject } from '../services/projectScopeReset';
 
 type SettingsSection = 'general' | 'appearance' | 'agent-config' | 'archived-threads' | 'update' | 'team' | 'plugins';
 type PromptMode = 'edit' | 'preview';
@@ -224,6 +226,7 @@ function SearchableSelect({
   searchable?: boolean;
   maxH?: string;
 }) {
+  const { t } = useAppI18n();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
@@ -275,7 +278,7 @@ function SearchableSelect({
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder={searchPlaceholder ?? '搜索...'}
+              placeholder={searchPlaceholder ?? t('settingsPage.searchPlaceholder')}
               className="w-full text-xs text-[var(--app-text)] placeholder-[var(--app-text-muted)] bg-transparent focus:outline-none"
             />
           </div>
@@ -294,7 +297,7 @@ function SearchableSelect({
                 <span className="truncate">{opt.label}</span>
               </button>
             ))
-          : <div className="px-3 py-4 text-xs text-[var(--app-text-muted)] text-center">{emptyText ?? '无数据'}</div>
+          : <div className="px-3 py-4 text-xs text-[var(--app-text-muted)] text-center">{emptyText ?? t('settingsPage.emptyData')}</div>
         }
       </div>
     </div>,
@@ -321,21 +324,21 @@ function SearchableSelect({
 
 
 
-function sectionList(t: ReturnType<typeof useI18n>['t']): { id: SettingsSection; label: string }[] {
+function sectionList(t: (key: string) => string): { id: SettingsSection; label: string }[] {
   return [
-    { id: 'general', label: t('settings_general') },
-    { id: 'appearance', label: t('settings_appearance') },
-    { id: 'agent-config', label: t('settings_agent_config') },
-    { id: 'archived-threads', label: t('settings_archived_threads') },
-    { id: 'team', label: t('settings_team') },
-    { id: 'plugins', label: t('settings_plugins') },
-    { id: 'update', label: t('settings_update') },
+    { id: 'general', label: t('settingsPage.nav.general') },
+    { id: 'appearance', label: t('settings.appearance') },
+    { id: 'agent-config', label: t('settingsPage.nav.config') },
+    { id: 'archived-threads', label: t('settingsPage.nav.projects') },
+    { id: 'team', label: t('settingsPage.nav.agents') },
+    { id: 'plugins', label: t('page.plugins') },
+    { id: 'update', label: t('settingsPage.nav.about') },
   ];
 }
 
 export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const [activeSection, setActiveSection] = useState<SettingsSection>('general');
-  const { t } = useI18n();
+  const { t } = useAppI18n();
 
   useEscapeKey(onClose, isOpen);
 
@@ -361,7 +364,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                 onClick={(e) => { e.stopPropagation(); onClose(); }}
                 className="text-sm font-medium text-[var(--app-text)] hover:text-[#2B8FFF] transition-colors"
               >
-                返回应用
+                {t('settingsPage.backToApp')}
               </button>
             </div>
             <div style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}>
@@ -397,6 +400,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
 }
 
 function GeneralSettingsContent() {
+  const { t } = useAppI18n();
   const [defaultModel, setDefaultModel] = useState<{ id: string; name: string; modelId: string } | null>(null);
   const [modelLoading, setModelLoading] = useState(true);
   const [showReasoning, setShowReasoning] = useState(opencodeSettings.getShowReasoning());
@@ -417,31 +421,31 @@ function GeneralSettingsContent() {
 
   return (
     <div className="max-w-2xl mx-auto py-8 px-8">
-      <h1 className="text-2xl font-semibold text-[#1F1F1F] mb-8">常规</h1>
+      <h1 className="text-2xl font-semibold text-[#1F1F1F] mb-8">{t('settingsPage.general.title')}</h1>
 
       <div className="mb-8">
-        <h2 className="text-sm font-medium text-[#1F1F1F] mb-1">模型</h2>
-        <p className="text-xs text-[#6B6B6B] mb-4">选择默认对话模型并查看其推理方式。</p>
+        <h2 className="text-sm font-medium text-[#1F1F1F] mb-1">{t('settingsPage.general.models')}</h2>
+        <p className="text-xs text-[#6B6B6B] mb-4">{t('settingsPage.general.modelsDesc')}</p>
         <div className="flex items-center justify-between p-4 border border-[#E5E5E5] rounded-lg mb-4">
           <div>
-            <div className="text-sm font-medium text-[#1F1F1F]">默认模型</div>
+            <div className="text-sm font-medium text-[#1F1F1F]">{t('settingsPage.general.defaultModel')}</div>
             <div className="text-xs text-[#6B6B6B] mt-1">
-              {modelLoading ? '加载中...' : defaultModel?.name ?? '未配置'}
+              {modelLoading ? t('settingsPage.loading') : defaultModel?.name ?? t('settingsPage.general.notConfigured')}
             </div>
           </div>
           <button
             onClick={() => useSettingsStore.getState().openConfigFile()}
             className={buttonClass}
           >
-            打开配置
+            {t('settingsPage.general.openConfig')}
           </button>
         </div>
       </div>
 
       <div className="space-y-6">
         <SettingsToggleRow
-          title="显示推理过程"
-          description="在消息中展示模型 reasoning 内容。"
+          title={t('settingsPage.general.showReasoning')}
+          description={t('settingsPage.general.showReasoningDesc')}
           enabled={showReasoning}
           onChange={(value) => {
             setShowReasoning(value);
@@ -449,8 +453,8 @@ function GeneralSettingsContent() {
           }}
         />
         <SettingsToggleRow
-          title="自动压缩上下文"
-          description="上下文较长时自动触发压缩。"
+          title={t('settingsPage.general.autoCompact')}
+          description={t('settingsPage.general.autoCompactDesc')}
           enabled={autoCompact}
           onChange={(value) => {
             setAutoCompact(value);
@@ -464,25 +468,25 @@ function GeneralSettingsContent() {
 
 function AppearanceSettingsContent() {
   const { theme, setTheme, language, setLanguage } = useSettingsStore();
-  const { t } = useI18n();
+  const { t } = useAppI18n();
 
   const themeOptions: { value: 'system' | 'light' | 'dark'; label: string }[] = [
-    { value: 'system', label: t('appearance_theme_system') },
-    { value: 'light', label: t('appearance_theme_light') },
-    { value: 'dark', label: t('appearance_theme_dark') },
+    { value: 'system', label: t('settings.themeSystem') },
+    { value: 'light', label: t('settings.themeLight') },
+    { value: 'dark', label: t('settings.themeDark') },
   ];
 
   const languageOptions: { value: 'zh-CN' | 'en'; label: string }[] = [
-    { value: 'zh-CN', label: t('appearance_language_zh') },
-    { value: 'en', label: t('appearance_language_en') },
+    { value: 'zh-CN', label: t('settings.languageZh') },
+    { value: 'en', label: t('settings.languageEn') },
   ];
 
   return (
     <div className="max-w-2xl mx-auto py-8 px-8">
-      <Header title={t('appearance_title')} desc={t('appearance_desc')} />
+      <Header title={t('settingsPage.appearance.title')} desc={t('settingsPage.appearance.desc')} />
 
       <div className="space-y-8">
-        <Section title={t('appearance_theme')} desc={t('appearance_theme_desc')}>
+        <Section title={t('settings.theme')} desc={t('settingsPage.appearance.themeDesc')}>
           <div className="flex gap-6">
             {themeOptions.map((option) => (
               <button
@@ -508,11 +512,11 @@ function AppearanceSettingsContent() {
             ))}
           </div>
           {theme === 'system' && (
-            <p className="text-xs text-[#9A9A9A] mt-2">{t('appearance_theme_system_note')}</p>
+            <p className="text-xs text-[#9A9A9A] mt-2">{t('settingsPage.appearance.themeSystemNote')}</p>
           )}
         </Section>
 
-        <Section title={t('appearance_language')} desc={t('appearance_language_desc')}>
+        <Section title={t('settings.language')} desc={t('settingsPage.appearance.languageDesc')}>
           <div className="max-w-xs ml-auto">
             <SearchableSelect
               options={languageOptions.map((option) => ({ value: option.value, label: option.label }))}
@@ -523,10 +527,10 @@ function AppearanceSettingsContent() {
           </div>
         </Section>
 
-        <Section title={t('appearance_window')} desc={t('appearance_window_desc')}>
+        <Section title={t('settingsPage.appearance.windowTitleBar')} desc={t('settingsPage.appearance.windowTitleBarDesc')}>
           <Card>
-            <SettingRow title="标题栏样式" desc="选择窗口标题栏的显示风格。">
-              <span className="text-xs text-[#6B6B6B]">默认</span>
+            <SettingRow title={t('settingsPage.appearance.windowTitleBar')} desc={t('settingsPage.appearance.windowTitleBarDesc')}>
+              <span className="text-xs text-[#6B6B6B]">{t('settingsPage.appearance.windowDefault')}</span>
             </SettingRow>
           </Card>
         </Section>
@@ -536,6 +540,7 @@ function AppearanceSettingsContent() {
 }
 
 function AgentConfigSettingsContent() {
+  const { t } = useAppI18n();
   const [connectedProviders, setConnectedProviders] = useState<ProviderEntry[]>(INITIAL_CONNECTED_PROVIDERS);
   const [popularProviders, setPopularProviders] = useState<ProviderEntry[]>(POPULAR_PROVIDERS);
   const [apiKeyModalProvider, setApiKeyModalProvider] = useState<string | null>(null);
@@ -547,7 +552,7 @@ function AgentConfigSettingsContent() {
     providerName: '',
   });
   const [configDropdownProviderId, setConfigDropdownProviderId] = useState<string | null>(null);
-  const [reloadToast, setReloadToast] = useState<string | null>(null);
+  const [reloadToast, setReloadToast] = useState<'success' | 'partial' | null>(null);
   const configDropdownTriggerRef = useRef<HTMLButtonElement>(null);
   const addProvider = useProviderStore((s) => s.addProvider);
   const removeProvider = useProviderStore((s) => s.removeProvider);
@@ -605,7 +610,7 @@ const handleReloadConfig = async () => {
     const ok = await reloadServerConfig();
     const connected = await opencodeProvider.fetchConnectedProviders();
     setConnectedProviders(connected);
-    setReloadToast(ok ? '配置已刷新' : '刷新完成（服务器可能需要重启才能生效）');
+    setReloadToast(ok ? 'success' : 'partial');
     setTimeout(() => setReloadToast(null), 3000);
   };
 
@@ -632,24 +637,26 @@ return (
             <svg className="w-4 h-4 text-[#10A37F]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
-            <span className="text-sm text-[#1F1F1F]">{reloadToast}</span>
+            <span className="text-sm text-[#1F1F1F]">
+              {reloadToast === 'success' ? t('settingsPage.config.configRefreshed') : t('settingsPage.config.reloadNeedsRestart')}
+            </span>
           </div>
         </div>
       )}
-      <Header title="配置" desc="管理 OpenCode 提供商、API 密钥和模型列表。" />
+      <Header title={t('settingsPage.config.title')} desc={t('settingsPage.config.desc')} />
 
       <div className="space-y-8">
-        <Section title="已连接提供商" desc="从 opencode.json 和运行中服务读取的提供商。">
+        <Section title={t('settingsPage.config.connectedProviders')} desc={t('settingsPage.config.connectedProvidersDesc')}>
           <div className="flex items-center justify-between p-4 border border-[#E5E5E5] rounded-lg mb-4">
             <div>
-              <div className="text-sm font-medium text-[#1F1F1F]">opencode.json</div>
-              <div className="text-xs text-[#6B6B6B] mt-1">全局配置文件，点击使用当前选中的编辑器打开</div>
+              <div className="text-sm font-medium text-[#1F1F1F]">{t('settingsPage.config.opencodeJson')}</div>
+              <div className="text-xs text-[#6B6B6B] mt-1">{t('settingsPage.config.opencodeJsonDesc')}</div>
             </div>
             <button
               onClick={() => useSettingsStore.getState().openConfigFile()}
               className={buttonClass}
             >
-              打开配置文件
+              {t('settingsPage.config.openConfigFile')}
             </button>
           </div>
           <Card>
@@ -702,7 +709,7 @@ return (
                           }}
                           className="w-full px-3 py-1.5 text-sm text-left text-[var(--app-text)] hover:bg-[var(--app-hover)]"
                         >
-                          添加模型
+                          {t('settingsPage.config.addModel')}
                         </button>
                         <button
                           type="button"
@@ -713,21 +720,21 @@ return (
                           }}
                           className="w-full px-3 py-1.5 text-sm text-left text-[var(--app-text)] hover:bg-[var(--app-hover)]"
                         >
-                          修改密钥
+                          {t('settingsPage.config.changeApiKey')}
                         </button>
                         <button
                           type="button"
                           onClick={() => { handleReloadConfig(); setConfigDropdownProviderId(null); }}
                           className="w-full px-3 py-1.5 text-sm text-left text-[var(--app-text)] hover:bg-[var(--app-hover)]"
                         >
-                          刷新配置
+                          {t('settingsPage.config.reloadConfig')}
                         </button>
                         <button
                           type="button"
                           onClick={() => { handleDisconnect(provider.id); setConfigDropdownProviderId(null); }}
                           className="w-full px-3 py-1.5 text-sm text-left text-[#EC5F66] hover:bg-[var(--app-hover)]"
                         >
-                          断开
+                          {t('settingsPage.config.disconnect')}
                         </button>
                       </FloatingActionMenu>
                     </div>
@@ -745,11 +752,11 @@ return (
                 )}
               </div>
             ))}
-            {connectedProviders.length === 0 && <Empty text="尚未连接任何提供商。" />}
+            {connectedProviders.length === 0 && <Empty text={t('settingsPage.config.noProviders')} />}
           </Card>
         </Section>
 
-        <Section title="热门提供商" desc="快速添加推荐或自定义的 OpenAI 兼容提供商。">
+        <Section title={t('settingsPage.config.popularProviders')} desc={t('settingsPage.config.popularProvidersDesc')}>
           <Card>
             {popularProviders.map((provider) => (
               <div key={provider.id} className="flex items-center justify-between p-4">
@@ -774,7 +781,7 @@ return (
                   }}
                   className="px-3 py-1.5 text-sm text-white bg-[#1F1F1F] hover:bg-[#333333] rounded-lg transition-colors"
                 >
-                  连接
+                  {t('settingsPage.config.connect')}
                 </button>
               </div>
             ))}
@@ -807,14 +814,16 @@ return (
 }
 
 function ArchivedThreadsSettingsContent() {
-  const { projects, addProject } = useProjectStore();
+  const { t } = useAppI18n();
+  const { projects } = useProjectStore();
   const { removeProjectWithConfirm } = useRemoveProject();
+  const { restartWithDir } = useSDK();
   const [projectConfigModal, setProjectConfigModal] = useState<{
     open: boolean;
     project: { id: string; name: string; path: string } | null;
   }>({ open: false, project: null });
   const [pickingFolder, setPickingFolder] = useState(false);
-  const { t } = useI18n();
+  const [activateError, setActivateError] = useState<string | null>(null);
 
   const handleRemoveProject = async (project: { id: string; name: string; path: string }) => {
     const removed = await removeProjectWithConfirm(project);
@@ -836,7 +845,12 @@ function ArchivedThreadsSettingsContent() {
         if (folder) {
           const pathParts = folder.split('/');
           const name = pathParts[pathParts.length - 1] || folder;
-          addProject({ id: `proj-${Date.now()}`, name, path: folder });
+          const project = { id: `proj-${Date.now()}`, name, path: folder };
+          setActivateError(null);
+          const { ok, error } = await registerNewProject(project, restartWithDir);
+          if (!ok) {
+            setActivateError(error || t('settingsPage.projects.switchWorkspaceFailed'));
+          }
         }
       } finally {
         setPickingFolder(false);
@@ -846,17 +860,21 @@ function ArchivedThreadsSettingsContent() {
 
   return (
     <div className="max-w-2xl mx-auto py-8 px-8">
-      <Header title={t('settings_archived_threads')} desc="管理本地项目路径，添加的项目会在主页侧边栏显示。" />
+      <Header title={t('settingsPage.nav.projects')} desc={t('settingsPage.projects.desc')} />
 
       <div className="space-y-8">
+        {activateError && (
+          <p className="text-sm text-[#EC5F66]">{activateError}</p>
+        )}
+
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-medium text-[#1F1F1F]">已添加的项目</h2>
+          <h2 className="text-sm font-medium text-[#1F1F1F]">{t('settingsPage.projects.addedProjects')}</h2>
           <button
             onClick={handleAddProject}
             disabled={pickingFolder}
             className="px-4 py-1.5 text-sm text-[#1F1F1F] border border-[#E5E5E5] rounded-full hover:bg-[#F5F5F5] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            添加项目
+            {t('settingsPage.projects.addProject')}
           </button>
         </div>
 
@@ -876,8 +894,8 @@ function ArchivedThreadsSettingsContent() {
                   type="button"
                   onClick={() => void handleRemoveProject(project)}
                   className="p-2 text-[#9A9A9A] hover:text-[#EC5F66] transition-colors"
-                  title="移除项目"
-                  aria-label="移除项目"
+                  title={t('settingsPage.projects.removeProject')}
+                  aria-label={t('settingsPage.projects.removeProject')}
                 >
                   <Trash2 size={16} />
                 </button>
@@ -885,8 +903,8 @@ function ArchivedThreadsSettingsContent() {
                   type="button"
                   onClick={() => setProjectConfigModal({ open: true, project })}
                   className="p-2 text-[#9A9A9A] hover:text-[#1F1F1F] transition-colors"
-                  title="环境配置"
-                  aria-label="环境配置"
+                  title={t('settingsPage.projects.envConfig')}
+                  aria-label={t('settingsPage.projects.envConfig')}
                 >
                   <Settings size={16} />
                 </button>
@@ -895,7 +913,7 @@ function ArchivedThreadsSettingsContent() {
           ))}
           {projects.length === 0 && (
             <div className="p-6 text-sm text-[#9A9A9A] text-center border border-dashed border-[#E5E5E5] rounded-lg">
-              暂无项目，点击上方按钮添加
+              {t('settingsPage.projects.empty')}
             </div>
           )}
         </div>
@@ -913,9 +931,10 @@ function ArchivedThreadsSettingsContent() {
 }
 
 function UpdateSettingsContent() {
+  const { t } = useAppI18n();
   const [engineConnected, setEngineConnected] = useState(false);
   const [engineVersion, setEngineVersion] = useState('unknown');
-  const [appVersion, setAppVersion] = useState('未知');
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [backgroundCheck, setBackgroundCheck] = useState(true);
   const [autoUpdate, setAutoUpdate] = useState(false);
@@ -940,37 +959,37 @@ function UpdateSettingsContent() {
 
   return (
     <div className="max-w-2xl mx-auto py-8 px-8">
-      <h1 className="text-2xl font-semibold text-[#1F1F1F] mb-2">运行时</h1>
-      <p className="text-sm text-[#6B6B6B] mb-8">本地引擎和 opencodex 服务器的状态。</p>
+      <h1 className="text-2xl font-semibold text-[#1F1F1F] mb-2">{t('settingsPage.runtime.title')}</h1>
+      <p className="text-sm text-[#6B6B6B] mb-8">{t('settingsPage.runtime.desc')}</p>
 
       <div className="border border-[#E5E5E5] rounded-lg p-4 mb-8">
-        <div className="text-sm font-medium text-[#1F1F1F]">OpenCode 引擎</div>
+        <div className="text-sm font-medium text-[#1F1F1F]">{t('settingsPage.runtime.engine')}</div>
         <div className="flex items-center gap-1.5 mt-3">
           <span className={`w-2 h-2 rounded-full ${engineConnected ? 'bg-[#10A37F]' : 'bg-[#9A9A9A]'}`} />
-          <span className="text-sm text-[#1F1F1F]">{engineConnected ? '已连接' : '未连接'}</span>
+          <span className="text-sm text-[#1F1F1F]">{engineConnected ? t('settingsPage.runtime.connected') : t('settingsPage.runtime.disconnected')}</span>
           <span className="text-sm text-[#6B6B6B] ml-2 font-mono">{engineConnected ? engineVersion : ''}</span>
         </div>
         {engineConnected && (
           <div className="mt-3">
             <button onClick={handleReloadConfig} className={buttonClass}>
-              刷新引擎配置
+              {t('settingsPage.runtime.reloadEngineConfig')}
             </button>
           </div>
         )}
       </div>
 
-      <h1 className="text-2xl font-semibold text-[#1F1F1F] mb-2">更新</h1>
-      <p className="text-sm text-[#6B6B6B] mb-8">通过静默后台检查和安装控制保持应用为最新版本。</p>
+      <h1 className="text-2xl font-semibold text-[#1F1F1F] mb-2">{t('settingsPage.update.title')}</h1>
+      <p className="text-sm text-[#6B6B6B] mb-8">{t('settingsPage.update.desc')}</p>
 
       <div className="mb-8">
-        <h2 className="text-sm font-medium text-[#1F1F1F] mb-1">应用版本</h2>
-        <p className="text-sm text-[#6B6B6B] font-mono">{appVersion}</p>
+        <h2 className="text-sm font-medium text-[#1F1F1F] mb-1">{t('settingsPage.update.appVersion')}</h2>
+        <p className="text-sm text-[#6B6B6B] font-mono">{appVersion ?? t('settingsPage.update.versionUnknown')}</p>
       </div>
 
       <div className="flex items-center justify-between mb-8 pb-8 border-b border-[#E5E5E5]">
         <div>
-          <h3 className="text-sm font-medium text-[#1F1F1F] mb-1">已是最新</h3>
-          <p className="text-xs text-[#6B6B6B]">上次检查刚刚</p>
+          <h3 className="text-sm font-medium text-[#1F1F1F] mb-1">{t('settingsPage.update.upToDate')}</h3>
+          <p className="text-xs text-[#6B6B6B]">{t('settingsPage.update.lastCheckedJustNow')}</p>
         </div>
         <button
           onClick={handleCheckUpdate}
@@ -981,20 +1000,20 @@ function UpdateSettingsContent() {
               : 'text-[#1F1F1F] hover:bg-[#F5F5F5]'
           }`}
         >
-          {checking ? '检查中...' : '检查'}
+          {checking ? t('settingsPage.update.checking') : t('settingsPage.update.check')}
         </button>
       </div>
 
       <div className="space-y-6">
         <SettingsToggleRow
-          title="后台检查"
-          description="opencodex 启动时始终检查，同时每天检查一次。"
+          title={t('settingsPage.update.backgroundCheck')}
+          description={t('settingsPage.update.backgroundCheckDesc')}
           enabled={backgroundCheck}
           onChange={setBackgroundCheck}
         />
         <SettingsToggleRow
-          title="自动更新"
-          description="自动下载更新（安装前会提示）。"
+          title={t('settingsPage.update.autoUpdate')}
+          description={t('settingsPage.update.autoUpdateDesc')}
           enabled={autoUpdate}
           onChange={setAutoUpdate}
         />
@@ -1004,6 +1023,7 @@ function UpdateSettingsContent() {
 }
 
 function TeamSettingsContent() {
+  const { t } = useAppI18n();
   const { agents, teams, addAgent, updateAgent, removeAgent, addTeam, updateTeam, removeTeam, fetchAgents, fetchTeams } = useAgentStore();
   const customAgents = useMemo(() => getCustomAgents(agents), [agents]);
   const { providers, loadProviders } = useProviderStore();
@@ -1035,16 +1055,17 @@ function TeamSettingsContent() {
     if (groups.size === 0 && INITIAL_DEFAULT_MODELS.length > 0) {
       groups.set('default', {
         providerId: 'default',
-        providerName: '默认模型',
+        providerName: t('settingsPage.agents.defaultModel'),
         models: INITIAL_DEFAULT_MODELS.filter((model) => model.enabled).map((model) => ({ id: model.id, label: model.name || model.id })),
       });
     }
 
     return Array.from(groups.values());
-  }, [providers, providerEntries]);
+  }, [providers, providerEntries, t]);
 
 const [defaultModelInfo, setDefaultModelInfo] = useState<{ id: string; name: string; modelId: string } | null>(null);
-  const defaultModelLabel = defaultModelInfo ? defaultModelInfo.name : '默认模型';
+  const defaultModelLabel = defaultModelInfo ? defaultModelInfo.name : t('settingsPage.agents.defaultModel');
+  const defaultModelOptionLabel = t('settingsPage.agents.defaultModelWithLabel').replace('{label}', defaultModelLabel);
 
   useEffect(() => {
     opencodeSettings.fetchDefaultModel().then(setDefaultModelInfo).catch(() => setDefaultModelInfo(null));
@@ -1064,20 +1085,20 @@ const [defaultModelInfo, setDefaultModelInfo] = useState<{ id: string; name: str
   });
 
   const providerOptions = useMemo(() => [
-    { value: 'default', label: `默认模型（${defaultModelLabel}）` },
+    { value: 'default', label: defaultModelOptionLabel },
     ...availableModels.filter(g => g.providerId !== 'default').map((g) => ({ value: g.providerId, label: g.providerName })),
-  ], [availableModels, defaultModelLabel]);
+  ], [availableModels, defaultModelOptionLabel]);
 
   const modelOptions = useMemo(() => {
     if (agentForm.providerId === 'default') {
-      return [{ value: 'default', label: `默认模型（${defaultModelLabel}）` }];
+      return [{ value: 'default', label: defaultModelOptionLabel }];
     }
     const group = availableModels.find((g) => g.providerId === agentForm.providerId);
     return group?.models.map((m) => ({
       value: m.id.includes('/') ? m.id.split('/').slice(1).join('/') : m.id,
       label: m.label,
     })) ?? [];
-  }, [availableModels, agentForm.providerId, defaultModelLabel]);
+  }, [availableModels, agentForm.providerId, defaultModelOptionLabel]);
   const [agentPromptMode, setAgentPromptMode] = useState<PromptEditMode>('edit');
 
   const [teamModalOpen, setTeamModalOpen] = useState(false);
@@ -1251,15 +1272,15 @@ const handleAgentConfirm = () => {
 
   return (
     <div className="max-w-2xl mx-auto py-8 px-8">
-      <Header title="智能体" desc="管理 agent markdown 配置和 team 编排。" />
+      <Header title={t('settingsPage.agents.title')} desc={t('settingsPage.agents.desc')} />
 
       <div className="space-y-8">
-        <Section title="Agents" desc="仅显示 ~/.opencode/agent 下的自定义 agent 配置，插件 agent 请在对话中通过 @ 使用。">
+        <Section title={t('settingsPage.agents.sectionAgents')} desc={t('settingsPage.agents.sectionAgentsDesc')}>
           <div className="flex items-center justify-between mb-4">
             <div />
             <SmallButton onClick={openAddAgentModal}>
               <Zap size={14} />
-              添加 Agent
+              {t('settingsPage.agents.addAgent')}
             </SmallButton>
           </div>
           <Card>
@@ -1273,15 +1294,15 @@ const handleAgentConfirm = () => {
                      <div className="text-sm font-medium text-[#1F1F1F] hover:text-[#2B8FFF] transition-colors">
                        {agent.name}
                      </div>
-                     <div className="text-xs text-[#6B6B6B] mt-1">{agent.description || '无描述'}</div>
+                     <div className="text-xs text-[#6B6B6B] mt-1">{agent.description || t('settingsPage.agents.noDescription')}</div>
                      <div className="flex items-center gap-2 mt-1">
                         <span className="text-xs text-[#9A9A9A]">
-                          {agent.model === 'default' ? `默认模型（${defaultModelLabel}）` : agent.model}
+                          {agent.model === 'default' ? defaultModelOptionLabel : agent.model}
                         </span>
                       {agent.steps && (
                         <>
                           <span className="text-xs text-[#9A9A9A]">·</span>
-                          <span className="text-xs text-[#9A9A9A]">steps: {agent.steps}</span>
+                          <span className="text-xs text-[#9A9A9A]">{t('settingsPage.meta.steps')} {agent.steps}</span>
                         </>
                       )}
                       {agent.color && (
@@ -1293,7 +1314,7 @@ const handleAgentConfirm = () => {
                     </div>
 {agent.permission && Object.keys(agent.permission).length > 0 && (
                       <div className="text-xs text-[#9A9A9A] mt-1">
-                        权限: {describeAgentPermission(agent.permission)}
+                        {t('settingsPage.agents.permission')} {describeAgentPermission(agent.permission)}
                       </div>
                     )}
                   </button>
@@ -1306,16 +1327,16 @@ const handleAgentConfirm = () => {
                 </div>
               </div>
             ))}
-            {customAgents.length === 0 && <Empty text="尚未发现自定义 agent 配置。" />}
+            {customAgents.length === 0 && <Empty text={t('settingsPage.agents.noCustomAgents')} />}
           </Card>
         </Section>
 
-        <Section title="Teams" desc="Team 由多个 agent 成员组成，可设置 delegate 和团队提示词。">
+        <Section title={t('settingsPage.agents.sectionTeams')} desc={t('settingsPage.agents.sectionTeamsDesc')}>
           <div className="flex items-center justify-between mb-4">
             <div />
             <SmallButton onClick={openAddTeamModal}>
               <Users size={14} />
-              添加 Team
+              {t('settingsPage.agents.addTeam')}
             </SmallButton>
           </div>
           <Card>
@@ -1331,28 +1352,28 @@ const handleAgentConfirm = () => {
                      </div>
                     <div className="text-xs text-[#6B6B6B] mt-1">{team.description || team.key}</div>
                     <div className="flex items-center gap-2 mt-1">
-                      <span className="text-xs text-[#9A9A9A]">key: {team.key}</span>
+                      <span className="text-xs text-[#9A9A9A]">{t('settingsPage.meta.key')} {team.key}</span>
                       {team.delegate && (
                         <>
                           <span className="text-xs text-[#9A9A9A]">·</span>
-                          <span className="text-xs text-[#10A37F]">delegate</span>
+                          <span className="text-xs text-[#10A37F]">{t('settingsPage.meta.delegate')}</span>
                         </>
                       )}
                       {team.model && (
                         <>
                           <span className="text-xs text-[#9A9A9A]">·</span>
-                          <span className="text-xs text-[#9A9A9A]">model: {team.model}</span>
+                          <span className="text-xs text-[#9A9A9A]">{t('settingsPage.meta.model')} {team.model}</span>
                         </>
                       )}
                       {team.steps && (
                         <>
                           <span className="text-xs text-[#9A9A9A]">·</span>
-                          <span className="text-xs text-[#9A9A9A]">steps: {team.steps}</span>
+                          <span className="text-xs text-[#9A9A9A]">{t('settingsPage.meta.steps')} {team.steps}</span>
                         </>
                       )}
                     </div>
                     <div className="text-xs text-[#9A9A9A] mt-1">
-                      成员：{team.agentIds.join(', ') || '无'}
+                      {t('settingsPage.agents.members')}{team.agentIds.join(', ') || t('settingsPage.agents.none')}
                     </div>
                   </button>
                   <button
@@ -1364,7 +1385,7 @@ const handleAgentConfirm = () => {
                 </div>
               </div>
             ))}
-            {teams.length === 0 && <Empty text="尚未创建 team。" />}
+            {teams.length === 0 && <Empty text={t('settingsPage.agents.noTeams')} />}
           </Card>
         </Section>
       </div>
@@ -1372,7 +1393,7 @@ const handleAgentConfirm = () => {
       {agentModalOpen && (
 <AgentModal
           modalRef={agentModalRef}
-          title={editingAgent ? '编辑 Agent' : '添加 Agent'}
+          title={editingAgent ? t('settingsPage.agents.editAgent') : t('settingsPage.agents.addAgentTitle')}
           name={agentForm.name}
           setName={(v) => setAgentForm((prev) => ({ ...prev, name: v }))}
           description={agentForm.description}
@@ -1402,7 +1423,7 @@ const handleAgentConfirm = () => {
       {teamModalOpen && (
         <TeamModal
           modalRef={teamModalRef}
-          title={editingTeam ? '编辑 Team' : '添加 Team'}
+          title={editingTeam ? t('settingsPage.agents.editTeam') : t('settingsPage.agents.addTeamTitle')}
           name={teamForm.name}
           setName={(v) => setTeamForm((prev) => ({ ...prev, name: v }))}
           teamKey={teamForm.key}
@@ -1451,39 +1472,40 @@ function AgentModal(props: {
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useAppI18n();
   useEscapeKey(props.onCancel, true);
 
   const AGENT_COLORS = [
-    { value: '', label: '默认', icon: <span className="w-3 h-3 rounded-full border border-[#E5E5E5]" /> },
-    { value: '#2B8FFF', label: '蓝色', icon: <span className="w-3 h-3 rounded-full bg-[#2B8FFF]" /> },
-    { value: '#10A37F', label: '绿色', icon: <span className="w-3 h-3 rounded-full bg-[#10A37F]" /> },
-    { value: '#EC5F66', label: '红色', icon: <span className="w-3 h-3 rounded-full bg-[#EC5F66]" /> },
-    { value: '#F59E0B', label: '橙色', icon: <span className="w-3 h-3 rounded-full bg-[#F59E0B]" /> },
-    { value: '#8B5CF6', label: '紫色', icon: <span className="w-3 h-3 rounded-full bg-[#8B5CF6]" /> },
-    { value: '#6B7280', label: '灰色', icon: <span className="w-3 h-3 rounded-full bg-[#6B7280]" /> },
+    { value: '', label: t('settingsPage.agentModal.colorDefault'), icon: <span className="w-3 h-3 rounded-full border border-[#E5E5E5]" /> },
+    { value: '#2B8FFF', label: t('settingsPage.agentModal.colorBlue'), icon: <span className="w-3 h-3 rounded-full bg-[#2B8FFF]" /> },
+    { value: '#10A37F', label: t('settingsPage.agentModal.colorGreen'), icon: <span className="w-3 h-3 rounded-full bg-[#10A37F]" /> },
+    { value: '#EC5F66', label: t('settingsPage.agentModal.colorRed'), icon: <span className="w-3 h-3 rounded-full bg-[#EC5F66]" /> },
+    { value: '#F59E0B', label: t('settingsPage.agentModal.colorOrange'), icon: <span className="w-3 h-3 rounded-full bg-[#F59E0B]" /> },
+    { value: '#8B5CF6', label: t('settingsPage.agentModal.colorPurple'), icon: <span className="w-3 h-3 rounded-full bg-[#8B5CF6]" /> },
+    { value: '#6B7280', label: t('settingsPage.agentModal.colorGray'), icon: <span className="w-3 h-3 rounded-full bg-[#6B7280]" /> },
   ];
 
   const PERMISSION_ITEMS = [
-    { key: 'read', label: '文件读取' },
-    { key: 'glob', label: '文件搜索' },
-    { key: 'grep', label: '内容搜索' },
-    { key: 'lsp', label: 'LSP 工具' },
-    { key: 'edit', label: '文件编辑' },
-    { key: 'write', label: '文件写入' },
-    { key: 'bash', label: '命令执行' },
+    { key: 'read', label: t('settingsPage.agentModal.permRead') },
+    { key: 'glob', label: t('settingsPage.agentModal.permGlob') },
+    { key: 'grep', label: t('settingsPage.agentModal.permGrep') },
+    { key: 'lsp', label: t('settingsPage.agentModal.permLsp') },
+    { key: 'edit', label: t('settingsPage.agentModal.permEdit') },
+    { key: 'write', label: t('settingsPage.agentModal.permWrite') },
+    { key: 'bash', label: t('settingsPage.agentModal.permBash') },
   ];
 
   const PERMISSION_OPTIONS = [
-    { value: '', label: '不设置' },
-    { value: 'allow', label: '允许' },
-    { value: 'ask', label: '需确认' },
-    { value: 'deny', label: '禁止' },
+    { value: '', label: t('settingsPage.agentModal.permUnset') },
+    { value: 'allow', label: t('settingsPage.agentModal.permAllow') },
+    { value: 'ask', label: t('settingsPage.agentModal.permAsk') },
+    { value: 'deny', label: t('settingsPage.agentModal.permDeny') },
   ];
 
   const modelOptionsWithDefault = useMemo(() => [
-    { value: 'default', label: `默认模型（${props.defaultModelLabel}）` },
+    { value: 'default', label: t('settingsPage.agents.defaultModelWithLabel').replace('{label}', props.defaultModelLabel) },
     ...props.modelOptions,
-  ], [props.modelOptions, props.defaultModelLabel]);
+  ], [props.modelOptions, props.defaultModelLabel, t]);
 
   const handleProviderChange = (newProviderId: string) => {
     props.setProviderId(newProviderId);
@@ -1506,61 +1528,61 @@ function AgentModal(props: {
 
         <div className="px-6 mt-4 overflow-y-auto flex-1 space-y-4">
           <div>
-            <label className="text-xs text-[#6B6B6B] mb-1 block">名称</label>
+            <label className="text-xs text-[#6B6B6B] mb-1 block">{t('settingsPage.agentModal.name')}</label>
             <input
               type="text"
               value={props.name}
               onChange={(e) => props.setName(e.target.value)}
               className={inputClass}
-              placeholder="Agent 名称"
+              placeholder={t('settingsPage.agentModal.namePlaceholder')}
             />
           </div>
 
           <div>
-            <label className="text-xs text-[#6B6B6B] mb-1 block">描述</label>
+            <label className="text-xs text-[#6B6B6B] mb-1 block">{t('settingsPage.agentModal.description')}</label>
             <textarea
               value={props.description}
               onChange={(e) => props.setDescription(e.target.value)}
               className={`${inputClass} min-h-[60px] resize-y`}
-              placeholder="Agent 描述"
+              placeholder={t('settingsPage.agentModal.descriptionPlaceholder')}
             />
           </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="text-xs text-[#6B6B6B] mb-1 block">提供商</label>
+              <label className="text-xs text-[#6B6B6B] mb-1 block">{t('settingsPage.agentModal.provider')}</label>
               <SearchableSelect
                 options={props.providerOptions}
                 value={props.providerId}
                 onChange={handleProviderChange}
-                searchPlaceholder="搜索提供商..."
-                emptyText="暂无提供商"
+                searchPlaceholder={t('settingsPage.agentModal.searchProvider')}
+                emptyText={t('settingsPage.agentModal.noProviders')}
               />
             </div>
             <div>
-              <label className="text-xs text-[#6B6B6B] mb-1 block">模型</label>
+              <label className="text-xs text-[#6B6B6B] mb-1 block">{t('settingsPage.agentModal.model')}</label>
               <SearchableSelect
                 options={modelOptionsWithDefault}
                 value={props.model}
                 onChange={props.setModel}
-                searchPlaceholder="搜索模型..."
-                emptyText="暂无模型"
+                searchPlaceholder={t('settingsPage.agentModal.searchModel')}
+                emptyText={t('settingsPage.agentModal.noModels')}
               />
             </div>
           </div>
 
           <div>
-            <label className="text-xs text-[#6B6B6B] mb-1 block">颜色</label>
+            <label className="text-xs text-[#6B6B6B] mb-1 block">{t('settingsPage.agentModal.color')}</label>
             <SearchableSelect
               options={AGENT_COLORS}
               value={props.color}
               onChange={props.setColor}
-              searchPlaceholder="搜索颜色..."
-              emptyText="暂无颜色"
+              searchPlaceholder={t('settingsPage.agentModal.searchColor')}
+              emptyText={t('settingsPage.agentModal.noColors')}
             />
             {props.color && (
               <div className="flex items-center gap-2 mt-2">
-                <span className="text-xs text-[#6B6B6B]">预览：</span>
+                <span className="text-xs text-[#6B6B6B]">{t('settingsPage.agentModal.preview')}</span>
                 <span className="w-4 h-4 rounded-full" style={{ backgroundColor: props.color }} />
                 <span className="text-xs text-[#1F1F1F]">{props.color}</span>
               </div>
@@ -1568,7 +1590,7 @@ function AgentModal(props: {
           </div>
 
           <div>
-            <label className="text-xs text-[#6B6B6B] mb-1 block">权限</label>
+            <label className="text-xs text-[#6B6B6B] mb-1 block">{t('settingsPage.agentModal.permission')}</label>
             <div className="border border-[#E5E5E5] rounded-md p-3 space-y-2">
               {PERMISSION_ITEMS.map((item) => (
                 <div key={item.key} className="flex items-center justify-between">
@@ -1589,17 +1611,17 @@ function AgentModal(props: {
                 </div>
               ))}
             </div>
-            <div className="text-xs text-[#9A9A9A] mt-1">未设置的权限项使用全局默认配置</div>
+            <div className="text-xs text-[#9A9A9A] mt-1">{t('settingsPage.agentModal.permissionDefaultHint')}</div>
           </div>
 
           <div>
-            <label className="text-xs text-[#6B6B6B] mb-1 block">最大步骤</label>
+            <label className="text-xs text-[#6B6B6B] mb-1 block">{t('settingsPage.agentModal.maxSteps')}</label>
             <input
               type="text"
               value={props.steps}
               onChange={(e) => props.setSteps(e.target.value)}
               className={inputClass}
-              placeholder="留空使用默认值"
+              placeholder={t('settingsPage.agentModal.stepsPlaceholder')}
             />
           </div>
 
@@ -1642,6 +1664,7 @@ function TeamModal(props: {
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useAppI18n();
   useEscapeKey(props.onCancel, true);
 
   return (
@@ -1656,29 +1679,29 @@ function TeamModal(props: {
 
         <div className="px-6 mt-4 overflow-y-auto flex-1 space-y-4">
           <TextInput
-            label="名称"
+            label={t('settingsPage.teamModal.name')}
             value={props.name}
             onChange={props.setName}
-            placeholder="团队名称"
+            placeholder={t('settingsPage.teamModal.namePlaceholder')}
           />
           <TextInput
-            label="Key"
+            label={t('settingsPage.teamModal.key')}
             value={props.teamKey}
             onChange={props.setTeamKey}
-            placeholder="team-key"
+            placeholder={t('settingsPage.teamModal.keyPlaceholder')}
           />
           <TextArea
-            label="描述"
+            label={t('settingsPage.teamModal.description')}
             value={props.description}
             onChange={props.setDescription}
-            placeholder="团队描述"
+            placeholder={t('settingsPage.teamModal.descriptionPlaceholder')}
             rows={2}
           />
-          <SettingRow title="Delegate" desc="允许团队将任务委派给成员。">
+          <SettingRow title={t('settingsPage.teamModal.delegate')} desc={t('settingsPage.teamModal.delegateDesc')}>
             <ToggleSwitch enabled={props.delegate} onChange={props.setDelegate} />
           </SettingRow>
           <div>
-            <label className="text-xs text-[#6B6B6B] mb-2 block">成员</label>
+            <label className="text-xs text-[#6B6B6B] mb-2 block">{t('settingsPage.teamModal.members')}</label>
             <div className="border border-[#E5E5E5] rounded-lg divide-y divide-[#E5E5E5]">
               {props.agents.map((agent) => (
                 <div
@@ -1689,7 +1712,7 @@ function TeamModal(props: {
                   <ToggleSwitch enabled={props.selectedIds.includes(agent.id)} onChange={() => props.toggleAgent(agent.id)} />
                 </div>
               ))}
-              {props.agents.length === 0 && <Empty text="暂无 agent" />}
+              {props.agents.length === 0 && <Empty text={t('settingsPage.teamModal.noAgents')} />}
             </div>
           </div>
           <PromptEditor
@@ -1786,6 +1809,7 @@ function ModalTitle({ title, onClose }: { title: string; onClose: () => void }) 
 }
 
 function ModalActions({ onConfirm, onCancel, disabled }: { onConfirm: () => void; onCancel: () => void; disabled?: boolean }) {
+  const { t } = useAppI18n();
   return (
     <div className="flex gap-2 mt-6">
       <button
@@ -1793,13 +1817,13 @@ function ModalActions({ onConfirm, onCancel, disabled }: { onConfirm: () => void
         disabled={disabled}
         className="flex-1 py-2 text-sm text-white bg-[#1F1F1F] rounded-md hover:bg-[#333333] transition-colors disabled:bg-[#9A9A9A] disabled:cursor-not-allowed"
       >
-        确定
+        {t('common.confirm')}
       </button>
       <button
         onClick={onCancel}
         className="flex-1 py-2 text-sm text-[#6B6B6B] border border-[#E5E5E5] rounded-md hover:bg-[#F5F5F5] transition-colors"
       >
-        取消
+        {t('common.cancel')}
       </button>
     </div>
   );
@@ -1835,9 +1859,10 @@ function TextArea({ label, value, onChange, placeholder, rows }: { label: string
 }
 
 function PromptEditor({ prompt, setPrompt, mode, setMode }: { prompt: string; setPrompt: (v: string) => void; mode: PromptEditMode; setMode: (v: PromptEditMode) => void }) {
+  const { t } = useAppI18n();
   return (
     <div>
-      <label className="text-xs text-[#6B6B6B] mb-1 block">提示词（支持 Markdown）</label>
+      <label className="text-xs text-[#6B6B6B] mb-1 block">{t('settingsPage.prompt.label')}</label>
       <div className="flex gap-1 mb-1">
         <button
           type="button"
@@ -1846,7 +1871,7 @@ function PromptEditor({ prompt, setPrompt, mode, setMode }: { prompt: string; se
             mode === 'edit' ? 'bg-[#1F1F1F] text-white' : 'text-[#6B6B6B] hover:bg-[#F0F0F0]'
           }`}
         >
-          编辑
+          {t('settingsPage.prompt.edit')}
         </button>
         <button
           type="button"
@@ -1855,14 +1880,14 @@ function PromptEditor({ prompt, setPrompt, mode, setMode }: { prompt: string; se
             mode === 'preview' ? 'bg-[#1F1F1F] text-white' : 'text-[#6B6B6B] hover:bg-[#F0F0F0]'
           }`}
         >
-          预览
+          {t('settingsPage.prompt.preview')}
         </button>
       </div>
       {mode === 'edit' ? (
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(normalizePromptText(e.target.value))}
-          placeholder="输入提示词，支持 Markdown 格式"
+          placeholder={t('settingsPage.prompt.placeholder')}
           rows={8}
           className="w-full px-3 py-2 text-sm border border-[#E5E5E5] rounded-md text-[#1F1F1F] placeholder-[#9A9A9A] focus:outline-none focus:border-[#2B8FFF] resize-y min-h-[160px]"
         />
@@ -1871,7 +1896,7 @@ function PromptEditor({ prompt, setPrompt, mode, setMode }: { prompt: string; se
           {prompt ? (
             <MarkdownRenderer content={prompt} />
           ) : (
-            <span className="text-[#9A9A9A]">暂无提示词内容</span>
+            <span className="text-[#9A9A9A]">{t('settingsPage.prompt.empty')}</span>
           )}
         </div>
       )}
@@ -1897,6 +1922,7 @@ function ToggleSwitch({ enabled, onChange }: { enabled: boolean; onChange: (v: b
 }
 
 function ProviderQuotaIcon({ providerId, apiKey, providerType }: { providerId: string; apiKey?: string; providerType?: string }) {
+  const { t } = useAppI18n();
   const quotas = useQuotaStore((s) => s.quotas);
   const fetchQuota = useQuotaStore((s) => s.fetchQuota);
   const getFiveHourQuota = useQuotaStore((s) => s.getFiveHourQuota);
@@ -1915,7 +1941,7 @@ function ProviderQuotaIcon({ providerId, apiKey, providerType }: { providerId: s
   if (!fiveHour) return null;
   const percentage = Math.min(fiveHour.percentage, 100);
   return (
-    <span className="inline-flex items-center gap-1" title={`使用额度 ${percentage}%`}>
+    <span className="inline-flex items-center gap-1" title={t('settingsPage.quota.usage').replace('{percentage}', String(percentage))}>
       <CircularProgress percentage={percentage} size={16} />
     </span>
   );
@@ -1930,10 +1956,11 @@ function SettingsToggleRow({ title, description, enabled, onChange }: { title: s
 }
 
 function PluginsSettingsContent() {
+  const { t } = useAppI18n();
   const [plugins, setPlugins] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [removing, setRemoving] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ message: string; visible: boolean }>({ message: '', visible: false });
+  const [toast, setToast] = useState<{ pluginName: string; visible: boolean }>({ pluginName: '', visible: false });
 
   const loadPlugins = async () => {
     setLoading(true);
@@ -1957,7 +1984,7 @@ function PluginsSettingsContent() {
       const ok = await removePlugin(pluginName);
       if (ok) {
         setPlugins((prev) => prev.filter((p) => p !== pluginName));
-        setToast({ message: `已卸载 ${pluginName}`, visible: true });
+        setToast({ pluginName, visible: true });
         setTimeout(() => setToast((prev) => ({ ...prev, visible: false })), 2000);
       }
     } finally {
@@ -1973,7 +2000,9 @@ function PluginsSettingsContent() {
             <svg className="w-4 h-4 text-[#10A37F]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
-            <span className="text-sm text-[#1F1F1F]">{toast.message}</span>
+            <span className="text-sm text-[#1F1F1F]">
+              {t('settingsPage.plugins.uninstalled').replace('{name}', toast.pluginName)}
+            </span>
             <button
               onClick={() => setToast((prev) => ({ ...prev, visible: false }))}
               className="text-[#9A9A9A] hover:text-[#1F1F1F] transition-colors"
@@ -1984,16 +2013,16 @@ function PluginsSettingsContent() {
         </div>
       )}
 
-      <Header title="插件" desc="管理 opencode.json 中已安装的插件。" />
+      <Header title={t('settingsPage.plugins.title')} desc={t('settingsPage.plugins.desc')} />
 
-      <Section title="已安装插件" desc="以下插件已配置在全局配置文件中，卸载将从配置文件中移除。">
+      <Section title={t('settingsPage.plugins.installed')} desc={t('settingsPage.plugins.installedDesc')}>
         <Card>
           {loading ? (
             <div className="p-6 flex items-center justify-center">
               <Loader2 size={20} className="animate-spin text-[#9A9A9A]" />
             </div>
           ) : plugins.length === 0 ? (
-            <Empty text="暂无已安装的插件。" />
+            <Empty text={t('settingsPage.plugins.empty')} />
           ) : (
             plugins.map((pluginName) => (
               <div key={pluginName} className="flex items-center justify-between p-4">
@@ -2016,7 +2045,7 @@ function PluginsSettingsContent() {
                   ) : (
                     <Trash2 size={12} />
                   )}
-                  卸载
+                  {t('settingsPage.plugins.uninstall')}
                 </button>
               </div>
             ))

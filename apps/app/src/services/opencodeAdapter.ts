@@ -17,7 +17,10 @@ import { useProjectStore } from '../stores/project';
 import { debugWarn, debugError, debugLog } from '../utils/debugLog';
 import { questionLog, questionWarn } from '../utils/questionDebug';
 import { isPendingSessionId } from '../utils/pendingSession';
-import { setCachedDefaultModelRef } from '../thread/composer/defaultModelRef';
+import { setCachedUserHome } from '../utils/displayPath';
+import { filterSessionsForProjectPath } from '../utils/sessionHierarchy';
+import { normalizeDirectoryPath } from '../sdk/eventDirectory';
+import { setCachedDefaultModelRef, resolveOutgoingModelRef } from '../thread/composer/defaultModelRef';
 import { parseModelRef } from '../thread/composer/models';
 import {
   getCachedTeamBySession,
@@ -138,6 +141,7 @@ async function fetchMergedOpenCodeCatalog(client: NonNullable<ReturnType<typeof 
     worktree: userDirectory || raw?.worktree || catalogDirectory || '',
     directory: userDirectory || raw?.directory || catalogDirectory || '',
   };
+  setCachedUserHome(paths.home);
 
   const skillByName = new Map<string, SdkSkillRecord>();
   const commands: SdkCommandRecord[] = [];
@@ -1737,9 +1741,19 @@ export const opencodeSession = {
     return sdkCall(async () => {
       const resp = await getClient()!.session.list({ directory, scope: 'project' });
       const sessions = (resp.data ?? []) as Record<string, unknown>[];
-      return sessions
-        .map(transformSDKSession)
-        .filter((s) => !s.parentID?.trim());
+      const projectPath = directory?.trim();
+      const projectId = projectPath
+        ? useProjectStore.getState().projects.find(
+          (p) => normalizeDirectoryPath(p.path) === normalizeDirectoryPath(projectPath),
+        )?.id
+        : undefined;
+      return filterSessionsForProjectPath(
+        sessions
+          .map(transformSDKSession)
+          .filter((s) => !s.parentID?.trim()),
+        projectPath,
+        projectId,
+      );
     }, MOCK_SESSIONS as unknown as Session[]);
   },
 
@@ -1949,9 +1963,14 @@ export const opencodePlugins = {
 export const opencodeSettings = {
   getDefaultModel: (): { id: string; name: string; modelId: string } | null => null,
 
-  fetchDefaultModel: async (): Promise<{ id: string; name: string; modelId: string } | null> => {
+  fetchDefaultModel: async (options?: {
+    updateCache?: boolean;
+  }): Promise<{ id: string; name: string; modelId: string } | null> => {
+    const updateCache = options?.updateCache === true;
     const resolveAndCache = (result: { id: string; name: string; modelId: string } | null) => {
-      setCachedDefaultModelRef(result?.id ?? null);
+      if (updateCache) {
+        setCachedDefaultModelRef(result?.id ?? null);
+      }
       return result;
     };
 
@@ -2496,7 +2515,13 @@ export const opencodeMessage = {
       if (options?.agent) {
         promptArgs.agent = options.agent;
       }
-      const parsedModel = parseModelRef(options?.modelRef);
+      const activeSession = useSessionStore.getState().sessions.find((s) => s.id === sessionId);
+      const resolvedModelRef = resolveOutgoingModelRef(
+        options?.modelRef,
+        sessionId,
+        activeSession?.model,
+      );
+      const parsedModel = parseModelRef(resolvedModelRef);
       if (parsedModel?.providerId && parsedModel.modelId) {
         promptArgs.model = {
           providerID: parsedModel.providerId,

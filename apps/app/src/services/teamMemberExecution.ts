@@ -1,6 +1,6 @@
 import type { Message } from '@opencodex/types';
 import { opencodeMessage } from './opencodeAdapter';
-import { isTeammateBootstrapContent } from '../thread/displayContent';
+import { isTeammateBootstrapContent, isTeamOrchestrationNudge } from '../thread/displayContent';
 import { useMessageStore } from '../stores/message';
 import { useSessionStore } from '../stores/session';
 import { useTeamStore } from '../stores/team';
@@ -25,6 +25,7 @@ function visibleMessages(messages: Message[]): Message[] {
   return messages.filter((message) => {
     const content = message.content ?? message.displayContent ?? '';
     if (message.role === 'user' && isTeammateBootstrapContent(content)) return false;
+    if (message.role === 'user' && isTeamOrchestrationNudge(content)) return false;
     return content.trim().length > 0 || message.role === 'assistant';
   });
 }

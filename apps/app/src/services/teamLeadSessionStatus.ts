@@ -66,9 +66,14 @@ export function isLeadSessionAwaitingDelegation(
   if (teamModeEnabled && currentTeam?.sessionId === leadSessionId) {
     for (const member of getDisplayTeamMembers(currentTeam, subAgents, leadSessionId)) {
       if (member.role === 'lead') continue;
-      if (member.status === 'working' || member.status === 'waiting') {
-        return true;
+      if (member.status !== 'working' && member.status !== 'waiting') continue;
+      if (member.sessionID) {
+        const workerRun = sessionRunStatus[member.sessionID];
+        if (workerRun === 'idle' || workerRun === 'error') {
+          continue;
+        }
       }
+      return true;
     }
   }
 

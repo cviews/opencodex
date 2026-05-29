@@ -3,7 +3,7 @@ import { UserMessageItem, AssistantMessageItem } from './MessageItem';
 import { TeamRelayMessageItem } from './TeamRelayMessageItem';
 import { ActivityRail } from './ActivityRail';
 import { buildTurnActivitySteps, COGNITION_WAIT_LABELS } from './activitySteps';
-import { getUserMessageDisplay, isCompactionInternalContent, isTeamRelayMessage } from './displayContent';
+import { getUserMessageDisplay, isCompactionInternalContent, isTeamOrchestrationNudge, isTeamRelayMessage } from './displayContent';
 import { dedupeTeamRelayTurns } from './teamRelayDedupe';
 import { isCompactionUiActive } from './compactionActivity';
 import type { CompactionActivity, SessionActivity } from '../stores/message';
@@ -60,6 +60,9 @@ function isHiddenUserMessage(msg: ChatMessage): boolean {
   if (msg.role !== 'user') return false;
   const raw = msg.content ?? '';
   if (isCompactionInternalContent(raw) || isCompactionInternalContent(msg.displayContent ?? '')) {
+    return true;
+  }
+  if (isTeamOrchestrationNudge(raw) || isTeamOrchestrationNudge(msg.displayContent ?? '')) {
     return true;
   }
   return !getUserMessageDisplay(msg).trim();

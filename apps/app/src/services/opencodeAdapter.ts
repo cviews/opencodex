@@ -2906,6 +2906,10 @@ export function buildTeamLaunchPrompt(
     'team_message / team_broadcast 单条消息不得超过 10240 字符；长报告写入 task 结果或拆成多条短消息，禁止一次发送整份 Markdown 文档',
     'Lead 等待成员执行时，用户可继续发消息；对进度类询问用 team_message 向成员索要 1-3 句简要状态，禁止要求成员发送长报告',
     '成员收到进度/状态询问时仅用简短文字回复当前阶段与预计完成点，完整结果待任务完成后再发送',
+    '成员任务完成或 session 结束前，必须用 team_message({ to: "lead", message: "..." }) 向 Lead 报告（1-3 句），禁止静默结束导致 Lead 一直等待',
+    '任一成员完成子任务（如 T1）后，Lead 必须在本 turn 继续 team_tasks/team_message 派发剩余任务（如 T2-T5 并行），禁止进入 idle 并向用户解释「在等待阶段」',
+    '仍有 pending/in_progress/blocked 的 team_tasks 时，Lead 禁止结束 turn；下一步必须是 team_list、team_tasks 或 team_message',
+    '收到成员回报或检测到成员 session idle/completed 后，Lead 必须立即协调下一批任务，不得只输出文字总结',
   ];
 
   const delegateRules = delegate

@@ -29,6 +29,12 @@ export function isCompactionInternalContent(content: string): boolean {
   return false;
 }
 
+/** Lead auto-resume nudge after member updates — internal only, hide in chat UI. */
+export function isTeamOrchestrationNudge(content: string): boolean {
+  if (!content) return false;
+  return content.trimStart().startsWith('[Team orchestration]');
+}
+
 const TEAM_RELAY_PREFIX_RE = /^\[Team message from ([^\]]+)\]:\s*/;
 
 /** Inbound team_message relay shown in the lead session as a synthetic user message. */
@@ -60,6 +66,7 @@ export function sanitizeUserMessageDisplay(content: string): string {
   if (!content) return '';
   if (isTeammateBootstrapContent(content)) return '';
   if (isCompactionInternalContent(content)) return '';
+  if (isTeamOrchestrationNudge(content)) return '';
 
   let result = content;
 

@@ -10,6 +10,8 @@ import { isTopLevelSession, dedupeSessionsById } from '../utils/sessionHierarchy
 import { resyncRunningProjectSessions } from '../services/projectSessionResync';
 import { syncSessionRunStatusToMessageStore } from '../services/sessionRunStatusSync';
 import { syncTeamMemberStatusFromRunStatus } from '../services/teamMemberRunStatusSync';
+import { scheduleLeadOrchestrationResume } from '../services/teamLeadExecution';
+import { scheduleNotifyLeadOfMemberCompletion } from '../services/teamMemberCompletionNotify';
 import {
   isLeadSessionAwaitingDelegation,
   resolveLeadSessionIdForWorkerSession,
@@ -838,6 +840,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         if (sessionID) {
           if (useMessageStore.getState().isCompactionRunning(sessionID)) return;
           get().setSessionRunStatus(sessionID, 'idle');
+          const { teamModeEnabled, currentTeam } = useTeamStore.getState();
+          if (
+            teamModeEnabled
+            && currentTeam?.sessionId
+            && sessionID !== currentTeam.sessionId
+          ) {
+            const member = currentTeam.members.find((item) => item.sessionID === sessionID);
+            if (member && member.role !== 'lead') {
+              scheduleNotifyLeadOfMemberCompletion(member, currentTeam.sessionId);
+              scheduleLeadOrchestrationResume(currentTeam.sessionId, {
+                reason: 'member-idle',
+                memberName: member.name,
+              });
+            }
+          }
         }
         const parentID = sessionID ? resolveSubAgentParentSessionId(get(), sessionID) : undefined;
         if (parentID) {

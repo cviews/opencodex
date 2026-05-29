@@ -1,6 +1,6 @@
 import type { Message } from '@opencodex/types';
 import type { ToolCall } from '../types';
-import { isCompactionInternalContent, isTeammateBootstrapContent } from './displayContent';
+import { isCompactionInternalContent, isTeammateBootstrapContent, isTeamOrchestrationNudge } from './displayContent';
 import { buildUserMessageDisplayText, extractFilePathsFromParts } from './composer/promptParts';
 import { debugError } from '../utils/debugLog';
 import { looksLikeSuccessfulReadOutput, textLooksLikeToolFailure, toolFailureText } from './toolFailure';
@@ -121,7 +121,7 @@ export function enrichMessageFromParts(msg: Message, parts?: unknown[]): Message
         next.content = display;
       }
     }
-    if (msg.role === 'user' && (!visibleText.trim() || isTeammateBootstrapContent(visibleText) || isCompactionInternalContent(visibleText))) {
+    if (msg.role === 'user' && (!visibleText.trim() || isTeammateBootstrapContent(visibleText) || isCompactionInternalContent(visibleText) || isTeamOrchestrationNudge(visibleText))) {
       next.content = '';
       next.displayContent = '';
     }
@@ -134,7 +134,7 @@ export function enrichMessageFromParts(msg: Message, parts?: unknown[]): Message
         next.content = display;
       }
     }
-    if (msg.content && (isTeammateBootstrapContent(msg.content) || isCompactionInternalContent(msg.content))) {
+    if (msg.content && (isTeammateBootstrapContent(msg.content) || isCompactionInternalContent(msg.content) || isTeamOrchestrationNudge(msg.content))) {
       next.content = '';
       next.displayContent = '';
     }

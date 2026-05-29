@@ -3,6 +3,8 @@ import type { TeamInfo, TeamEvent, TeamMember, TeamTask } from '../types';
 import { invalidateTeamListCache, invalidateTeamBySessionCache, opencodeTeam } from '../services/opencodeAdapter';
 import { registerCrossProjectEventHandler, extractEventPayload } from '../sdk/eventRouter';
 import { scheduleTeamMemberExecution } from '../services/teamMemberExecution';
+import { scheduleLeadOrchestrationResume } from '../services/teamLeadExecution';
+import { scheduleNotifyLeadOfMemberCompletion } from '../services/teamMemberCompletionNotify';
 import { getCachedTeamBySession } from '../services/teamSessionCache';
 import {
   resolveTaskSubAgentsForDisplay,
@@ -330,6 +332,14 @@ export const useTeamStore = create<TeamState>((set, get) => ({
           && (rawStatus === 'idle' || rawStatus === 'completed')
         ) {
           void useSessionStore.getState().fetchSubAgents();
+          const member = store.currentTeam?.members.find((m) => memberMatchesKey(m, memberKey));
+          if (member && member.role !== 'lead') {
+            scheduleNotifyLeadOfMemberCompletion(member, leadSessionId);
+          }
+          scheduleLeadOrchestrationResume(leadSessionId, {
+            reason: 'member-completed',
+            memberName: memberKey,
+          });
         }
         void store.refreshCurrentTeam();
         break;
@@ -345,6 +355,7 @@ export const useTeamStore = create<TeamState>((set, get) => ({
         const to = String(event.data.to ?? '');
         if (leadSessionId && to === 'lead') {
           void useMessageStore.getState().loadMessages(leadSessionId);
+          scheduleLeadOrchestrationResume(leadSessionId, { reason: 'member-message' });
         }
         if (to && to !== 'lead' && store.currentTeam) {
           const target = store.currentTeam.members.find((member) => memberMatchesKey(member, to));

@@ -38,7 +38,10 @@ import {
   resolveTaskSubAgentsForDisplay,
   resolveTeamMembersForDisplay,
 } from '../services/teamDisplay';
-import { isRunSidebarHidden } from '../services/sessionRunDisplayLifecycle';
+import {
+  isRunArtifactCleared,
+  isRunSidebarHidden,
+} from '../services/sessionRunDisplayLifecycle';
 import { buildSessionsNeedingUserActionForProject } from '../utils/sessionUserAction';
 import { ProjectSessionsList } from './ProjectSessionsList';
 import {
@@ -68,7 +71,6 @@ function renderSessionSidebarExtra({
   currentTeam,
   subAgents,
   sessionRunStatus,
-  sessionRunStartedAt,
   selectedSubAgentId,
   selectedMemberId,
   sessionActivity,
@@ -79,7 +81,6 @@ function renderSessionSidebarExtra({
   currentTeam: TeamInfo | null;
   subAgents: SubAgentItem[];
   sessionRunStatus: Record<string, SessionRunStatus>;
-  sessionRunStartedAt: Record<string, number>;
   selectedSubAgentId: string | null;
   selectedMemberId: string | null;
   sessionActivity: Record<string, SessionActivity>;
@@ -87,18 +88,18 @@ function renderSessionSidebarExtra({
   if (session.id !== activeSessionId) return null;
   if (isRunSidebarHidden(session.id)) return null;
 
+  const teamCleared = isRunArtifactCleared(session.id, 'team');
+  const taskSubAgentsCleared = isRunArtifactCleared(session.id, 'taskSubAgents');
+
   const isTeamSession = teamModeEnabled && currentTeam && (
     currentTeam.sessionId === session.id
     || currentTeam.members.some((member) => member.sessionID === session.id)
   );
-  const taskAgents = isTeamSession && currentTeam
-    ? resolveTaskSubAgentsForDisplay(
-      currentTeam,
-      subAgents,
-      session.id,
-      sessionRunStartedAt[session.id],
-    )
-    : resolveTaskSubAgentsForDisplay(null, subAgents, session.id, sessionRunStartedAt[session.id]);
+  const taskAgents = taskSubAgentsCleared
+    ? []
+    : isTeamSession && currentTeam
+      ? resolveTaskSubAgentsForDisplay(currentTeam, subAgents, session.id)
+      : resolveTaskSubAgentsForDisplay(null, subAgents, session.id);
 
   const renderTaskSubAgents = () => {
     if (taskAgents.length === 0) return null;
@@ -137,14 +138,13 @@ function renderSessionSidebarExtra({
     );
   };
 
-  if (isTeamSession && currentTeam) {
+  if (isTeamSession && currentTeam && !teamCleared) {
     const displayMembers = resolveTeamMembersForDisplay(
       currentTeam,
       subAgents,
       session.id,
       sessionRunStatus,
     );
-    if (displayMembers.length === 0 && taskAgents.length === 0) return null;
 
     return (
       <div className="mt-0.5 flex flex-col gap-px">
@@ -282,7 +282,7 @@ export function ProjectSection() {
   const renameInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { restartWithDir, reconnecting, connected } = useSDK();
-  const { sessions, subAgents, activeSessionId, selectedSubAgentId, sessionRunStatus, sessionRunStartedAt, byProject } =
+  const { sessions, subAgents, activeSessionId, selectedSubAgentId, sessionRunStatus, byProject } =
     useSessionStore();
   const loadingBySession = useMessageStore((s) => s.loadingBySession);
   const sessionActivity = useMessageStore((s) => s.sessionActivity);
@@ -633,7 +633,6 @@ export function ProjectSection() {
                         currentTeam,
                         subAgents,
                         sessionRunStatus,
-                        sessionRunStartedAt,
                         selectedSubAgentId,
                         selectedMemberId,
                         sessionActivity,

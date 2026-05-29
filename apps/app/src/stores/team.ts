@@ -563,8 +563,5 @@ export function getDisplayTaskSubAgents(
   parentSessionId?: string,
 ): ReturnType<typeof useSessionStore.getState>['subAgents'] {
   const leadSessionId = parentSessionId ?? team?.sessionId;
-  const runStartedAt = leadSessionId
-    ? useSessionStore.getState().sessionRunStartedAt[leadSessionId]
-    : undefined;
-  return resolveTaskSubAgentsForDisplay(team, subAgents, leadSessionId, runStartedAt);
+  return resolveTaskSubAgentsForDisplay(team, subAgents, leadSessionId);
 }

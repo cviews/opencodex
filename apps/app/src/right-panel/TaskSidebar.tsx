@@ -10,8 +10,10 @@ import { on, EventType, extractEventPayload } from '../sdk/eventRouter';
 import { selectTeamMember, selectSubAgent } from '../services/executionView';
 import { memberDisplayName, resolveTaskSubAgentsForDisplay, resolveTeamMembersForDisplay } from '../services/teamDisplay';
 import {
+  evaluateLeadRunArtifacts,
+  isRunArtifactCleared,
   isRunSidebarHidden,
-  maybeClearCompletedLeadRunDisplay,
+  maybeClearCompletedRunArtifacts,
   setLeadRunPlanClearHandler,
 } from '../services/sessionRunDisplayLifecycle';
 import { useMessageStore } from '../stores/message';
@@ -63,13 +65,12 @@ export function TaskSidebar() {
     setCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const { activeSessionId, subAgents, selectedSubAgentId, fetchSubAgents, sessions, sessionRunStatus, sessionRunStartedAt } = useSessionStore();
+  const { activeSessionId, subAgents, selectedSubAgentId, fetchSubAgents, sessions, sessionRunStatus } = useSessionStore();
   const sessionActivity = useMessageStore((s) => s.sessionActivity);
   const { currentTeam, setCurrentTeamBySession, teamModeEnabled, selectedMemberId, setActiveTeams } = useTeamStore();
 
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
-  const lastTodoUpdatedAtRef = useRef<Record<string, number>>({});
   const subAgentPlanKeysByParentRef = useRef<Record<string, Set<string>>>({});
 
   const refreshPlans = useCallback(() => {
@@ -167,24 +168,11 @@ export function TaskSidebar() {
   }, [activeSessionId, setCurrentTeamBySession]);
 
   useEffect(() => {
-    if (!activeSessionId) return;
-    const runStartedAt = sessionRunStartedAt[activeSessionId];
-    if (!runStartedAt) return;
-    clearPlansForSession(activeSessionId);
-    void refreshTeam();
-    fetchSubAgents();
-  }, [activeSessionId, sessionRunStartedAt, clearPlansForSession, refreshTeam, fetchSubAgents]);
-
-  useEffect(() => {
     const unsubs: Array<() => void> = [];
 
     unsubs.push(
       on(EventType.TODO_UPDATED, (event) => {
         const props = extractEventPayload(event as Record<string, unknown>);
-        const sessionID = String(props.sessionID ?? props.sessionId ?? '').trim();
-        if (sessionID) {
-          lastTodoUpdatedAtRef.current[sessionID] = Date.now();
-        }
         refreshPlans();
       }),
     );
@@ -231,32 +219,33 @@ export function TaskSidebar() {
     };
   }, [refreshPlans, refreshTeam, fetchSubAgents, clearPlansForSession]);
 
-  const leadSessionIdle = activeSessionId
-    ? sessionRunStatus[activeSessionId] === 'idle' || sessionRunStatus[activeSessionId] === 'error'
+  const planSnapshot = { sessionPlans, subAgentPlans };
+  const artifactSnapshot = activeSessionId
+    ? evaluateLeadRunArtifacts(activeSessionId, planSnapshot)
+    : null;
+  const leadSessionIdle = artifactSnapshot?.leadRunEnded ?? false;
+  const runSidebarHidden = activeSessionId
+    ? isRunSidebarHidden(activeSessionId, planSnapshot)
     : false;
-  const runSidebarHidden = activeSessionId ? isRunSidebarHidden(activeSessionId) : false;
+  const planCleared = activeSessionId ? isRunArtifactCleared(activeSessionId, 'plan') : true;
+  const teamCleared = activeSessionId ? isRunArtifactCleared(activeSessionId, 'team') : true;
+  const taskSubAgentsCleared = activeSessionId
+    ? isRunArtifactCleared(activeSessionId, 'taskSubAgents')
+    : true;
 
   useEffect(() => {
-    if (!activeSessionId || !leadSessionIdle || runSidebarHidden) return;
-    const timer = window.setTimeout(() => {
-      maybeClearCompletedLeadRunDisplay(activeSessionId, {
-        sessionPlans,
-        subAgentPlans,
-      });
-    }, 400);
-    return () => window.clearTimeout(timer);
+    if (!activeSessionId || !leadSessionIdle) return;
+    maybeClearCompletedRunArtifacts(activeSessionId, planSnapshot);
   }, [
     activeSessionId,
     leadSessionIdle,
-    runSidebarHidden,
     sessionPlans,
     subAgentPlans,
     currentTeam,
     subAgents,
     sessionRunStatus,
+    teamModeEnabled,
   ]);
-
-  const currentRunStartedAt = activeSessionId ? sessionRunStartedAt[activeSessionId] : undefined;
 
   const sessionPlan = activeSessionId ? sessionPlans[activeSessionId] : null;
   const displayMembers = useMemo(
@@ -268,11 +257,11 @@ export function TaskSidebar() {
 
   const taskSubAgents = useMemo(
     () => (currentTeam && activeSessionId
-      ? resolveTaskSubAgentsForDisplay(currentTeam, subAgents, activeSessionId, currentRunStartedAt)
+      ? resolveTaskSubAgentsForDisplay(currentTeam, subAgents, activeSessionId)
       : activeSessionId
-        ? resolveTaskSubAgentsForDisplay(null, subAgents, activeSessionId, currentRunStartedAt)
+        ? resolveTaskSubAgentsForDisplay(null, subAgents, activeSessionId)
         : []),
-    [currentTeam, subAgents, activeSessionId, currentRunStartedAt],
+    [currentTeam, subAgents, activeSessionId],
   );
 
   const teamWorkers = displayMembers.filter((m) => m.role !== 'lead');
@@ -300,19 +289,17 @@ export function TaskSidebar() {
     ? subAgentPlans[planAgentId] ?? planData
     : planData;
 
-  const planSessionId = planAgentId ?? activeSessionId;
-  const planUpdatedThisRun = !planSessionId
-    || !currentRunStartedAt
-    || Math.max(
-      lastTodoUpdatedAtRef.current[planSessionId] ?? 0,
-      activeSessionId ? (lastTodoUpdatedAtRef.current[activeSessionId] ?? 0) : 0,
-    ) >= currentRunStartedAt;
+  const planStillActive =
+    (artifactSnapshot?.hasPlan ?? false)
+    && !!planDataResolved
+    && !planCleared;
 
-  const planStillActive = !!planDataResolved && (
-    !currentRunStartedAt || planUpdatedThisRun
-  );
-
-  const displayTaskSubAgents = taskSubAgents;
+  const displayTaskSubAgents = taskSubAgentsCleared ? [] : taskSubAgents;
+  const showTeamSection =
+    teamModeEnabled
+    && currentTeam
+    && (artifactSnapshot?.hasTeam ?? true)
+    && !teamCleared;
 
   const sortedTasks = teamModeEnabled && currentTeam
     ? [...currentTeam.tasks].sort((a, b) => TASK_SORT_ORDER[a.status] - TASK_SORT_ORDER[b.status])
@@ -328,7 +315,10 @@ export function TaskSidebar() {
     ? sessions.find((session) => session.id === activeSessionId)?.title
     : undefined;
 
-  if (runSidebarHidden) {
+  const hasVisibleSections =
+    showTeamSection || planStillActive || displayTaskSubAgents.length > 0;
+
+  if (runSidebarHidden || !hasVisibleSections) {
     return (
       <div className="px-3 py-4 text-xs text-[#9A9A9A]">
         {activeSessionId ? t('task_no_plan') : t('task_select_session')}
@@ -338,7 +328,7 @@ export function TaskSidebar() {
 
   return (
     <div className="flex flex-col gap-2 p-3">
-      {teamModeEnabled && currentTeam && (
+      {showTeamSection && (
         <CollapsibleSection
           title="Team Tasks"
           collapsed={collapsed.teamTasks}
@@ -436,7 +426,7 @@ export function TaskSidebar() {
         </CollapsibleSection>
       )}
 
-      {planStillActive ? (
+      {planStillActive && (
         <CollapsibleSection
           title={
             selectedSubAgent
@@ -454,10 +444,6 @@ export function TaskSidebar() {
             ))}
           </div>
         </CollapsibleSection>
-      ) : (
-        <div className="text-xs text-[#9A9A9A] px-3 py-4">
-          {activeSessionId ? t('task_no_plan') : t('task_select_session')}
-        </div>
       )}
 
       {displayTaskSubAgents.length > 0 && (

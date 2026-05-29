@@ -237,17 +237,19 @@ export function resolveTeamMembersForDisplay(
   return suppressOrphanDuplicateSpawns([lead, ...workers], team);
 }
 
-/** During a run, hide completed sub-agents from prior turns; when idle, keep the last run visible. */
-export function filterSubAgentsForCurrentRun(
+/**
+ * Exclude child sessions that already existed when the current lead run started.
+ * Scoped on run start (not wall-clock time).
+ */
+export function filterSubAgentsForActiveRun(
   agents: SubAgentItem[],
-  runStartedAt?: number,
+  leadSessionId?: string,
 ): SubAgentItem[] {
-  if (!runStartedAt) return agents;
-  return agents.filter((agent) => {
-    if (agent.status === 'running' || agent.status === 'pending') return true;
-    if (agent.status !== 'completed') return false;
-    return agent.createdAt != null && agent.createdAt >= runStartedAt;
-  });
+  if (!leadSessionId) return agents;
+  const excluded = useSessionStore.getState().leadRunExcludedChildSessionIds[leadSessionId];
+  if (!excluded?.length) return agents;
+  const excludedSet = new Set(excluded);
+  return agents.filter((agent) => !excludedSet.has(agent.sessionId));
 }
 
 /** Task-tool subagents only (excludes team_spawn teammates). */
@@ -255,19 +257,18 @@ export function resolveTaskSubAgentsForDisplay(
   team: TeamInfo | null,
   subAgents: SubAgentItem[],
   parentSessionId?: string,
-  runStartedAt?: number,
 ): SubAgentItem[] {
   if (!team) {
     const leadSessionId = parentSessionId ?? '';
     const scoped = leadSessionId
       ? subAgents.filter((a) => a.parentSessionId === leadSessionId)
       : subAgents;
-    return filterSubAgentsForCurrentRun(scoped, runStartedAt);
+    return filterSubAgentsForActiveRun(scoped, leadSessionId);
   }
 
   const leadSessionId = parentSessionId ?? team.sessionId;
   const scoped = scopedSubAgents(subAgents, leadSessionId).filter((agent) =>
     isTaskSubagentChildSession(agent, team, leadSessionId),
   );
-  return filterSubAgentsForCurrentRun(scoped, runStartedAt);
+  return filterSubAgentsForActiveRun(scoped, leadSessionId);
 }

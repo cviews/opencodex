@@ -4,9 +4,21 @@ import { useSessionStore } from '../stores/session';
 import { useTeamStore } from '../stores/team';
 import { clearExecutionView } from './executionView';
 
+export type RunArtifactKind = 'plan' | 'taskSubAgents' | 'team';
+
 export interface LeadRunPlanSnapshot {
   sessionPlans: Record<string, PlanData>;
   subAgentPlans: Record<string, PlanData>;
+}
+
+export interface LeadRunArtifactSnapshot {
+  leadRunEnded: boolean;
+  hasPlan: boolean;
+  planMarkedCompleted: boolean;
+  hasTaskSubAgents: boolean;
+  taskSubAgentsMarkedCompleted: boolean;
+  hasTeam: boolean;
+  teamMarkedCompleted: boolean;
 }
 
 type PlanClearHandler = (leadSessionId: string) => void;
@@ -24,19 +36,20 @@ export function isLeadSessionId(sessionId: string): boolean {
   return useTeamStore.getState().currentTeam?.sessionId === sessionId;
 }
 
-function planStepsAllCompleted(plan?: PlanData | null): boolean {
-  if (!plan?.steps.length) return true;
+/** Matches sidebar plan step UI: every step shows completed. */
+function planMarkedCompleted(plan: PlanData | null | undefined): boolean {
+  if (!plan?.steps.length) return false;
   return plan.steps.every((step) => step.status === 'completed');
 }
 
-function collectRunDisplayItems(
+function collectArtifactContext(
   leadSessionId: string,
   plans?: LeadRunPlanSnapshot,
 ): {
   workers: TeamMember[];
   tasks: TeamInfo['tasks'];
   taskSubAgents: SubAgentItem[];
-  hadArtifacts: boolean;
+  leadPlan: PlanData | undefined;
 } {
   const sessionStore = useSessionStore.getState();
   const { teamModeEnabled, currentTeam } = useTeamStore.getState();
@@ -52,90 +65,175 @@ function collectRunDisplayItems(
     teamModeEnabled ? currentTeam : null,
     subAgents,
     leadSessionId,
-    undefined,
   );
   const tasks = currentTeam?.sessionId === leadSessionId ? currentTeam.tasks : [];
-
   const leadPlan = plans?.sessionPlans[leadSessionId];
-  const hasPlanSteps =
-    !!leadPlan?.steps.length
-    || taskSubAgents.some((agent) => (plans?.subAgentPlans[agent.id]?.steps.length ?? 0) > 0);
 
-  const hadArtifacts =
-    workers.length > 0
-    || tasks.length > 0
-    || taskSubAgents.length > 0
-    || hasPlanSteps;
+  return { workers, tasks, taskSubAgents, leadPlan };
+}
 
-  return { workers, tasks, taskSubAgents, hadArtifacts };
+/** Per-session artifact presence and whether sidebar completion markers are all done. */
+export function evaluateLeadRunArtifacts(
+  leadSessionId: string,
+  plans?: LeadRunPlanSnapshot,
+): LeadRunArtifactSnapshot {
+  const runStatus = useSessionStore.getState().sessionRunStatus[leadSessionId];
+  const leadRunEnded = runStatus === 'idle' || runStatus === 'error';
+
+  const { teamModeEnabled, currentTeam } = useTeamStore.getState();
+  const { workers, tasks, taskSubAgents, leadPlan } = collectArtifactContext(leadSessionId, plans);
+
+  const subAgentPlansWithSteps = taskSubAgents.filter(
+    (agent) => (plans?.subAgentPlans[agent.id]?.steps.length ?? 0) > 0,
+  );
+  const hasLeadPlan = !!leadPlan?.steps.length;
+  const hasPlan = hasLeadPlan || subAgentPlansWithSteps.length > 0;
+
+  let planMarkedDone = true;
+  if (hasLeadPlan && !planMarkedCompleted(leadPlan)) {
+    planMarkedDone = false;
+  }
+  for (const agent of subAgentPlansWithSteps) {
+    if (!planMarkedCompleted(plans?.subAgentPlans[agent.id])) {
+      planMarkedDone = false;
+      break;
+    }
+  }
+  if (!hasPlan) {
+    planMarkedDone = false;
+  }
+
+  const hasTaskSubAgents = taskSubAgents.length > 0;
+  const taskSubAgentsMarkedDone =
+    hasTaskSubAgents && taskSubAgents.every((agent) => agent.status === 'completed');
+
+  const hasTeam =
+    teamModeEnabled
+    && !!currentTeam
+    && currentTeam.sessionId === leadSessionId;
+  const teamMarkedDone =
+    hasTeam
+    && workers.every((member) => member.status === 'completed')
+    && (tasks.length === 0 || tasks.every((task) => task.status === 'completed'));
+
+  return {
+    leadRunEnded,
+    hasPlan,
+    planMarkedCompleted: planMarkedDone,
+    hasTaskSubAgents,
+    taskSubAgentsMarkedCompleted: taskSubAgentsMarkedDone,
+    hasTeam,
+    teamMarkedCompleted: teamMarkedDone,
+  };
+}
+
+export function isRunArtifactCleared(leadSessionId: string, kind: RunArtifactKind): boolean {
+  return !!useSessionStore.getState().runArtifactsCleared[leadSessionId]?.[kind];
+}
+
+/** True when lead run ended and every present artifact type has been cleared from sidebars. */
+export function isRunSidebarHidden(leadSessionId: string, plans?: LeadRunPlanSnapshot): boolean {
+  const snapshot = evaluateLeadRunArtifacts(leadSessionId, plans);
+  if (!snapshot.leadRunEnded) return false;
+
+  if (snapshot.hasPlan && !isRunArtifactCleared(leadSessionId, 'plan')) return false;
+  if (snapshot.hasTaskSubAgents && !isRunArtifactCleared(leadSessionId, 'taskSubAgents')) {
+    return false;
+  }
+  if (snapshot.hasTeam && !isRunArtifactCleared(leadSessionId, 'team')) return false;
+  return true;
+}
+
+function clearRunArtifact(leadSessionId: string, kind: RunArtifactKind): void {
+  useSessionStore.getState().markRunArtifactCleared(leadSessionId, kind);
+
+  switch (kind) {
+    case 'plan':
+      planClearHandler?.(leadSessionId);
+      break;
+    case 'taskSubAgents':
+      useSessionStore.getState().clearSubAgentsForLeadSession(leadSessionId);
+      useSessionStore.getState().clearLeadRunExcludedChildren(leadSessionId);
+      break;
+    case 'team':
+      useTeamStore.getState().clearTeamRunScope(leadSessionId);
+      useTeamStore.getState().deactivateSessionTeam(leadSessionId);
+      break;
+  }
+}
+
+/** After lead run ends, clear each artifact block once its sidebar markers are all completed. */
+export function maybeClearCompletedRunArtifacts(
+  leadSessionId: string,
+  plans?: LeadRunPlanSnapshot,
+): boolean {
+  if (!leadSessionId) return false;
+
+  const snapshot = evaluateLeadRunArtifacts(leadSessionId, plans);
+  if (!snapshot.leadRunEnded) return false;
+
+  let clearedAny = false;
+
+  if (
+    snapshot.hasPlan
+    && snapshot.planMarkedCompleted
+    && !isRunArtifactCleared(leadSessionId, 'plan')
+  ) {
+    clearRunArtifact(leadSessionId, 'plan');
+    clearedAny = true;
+  }
+
+  if (
+    snapshot.hasTaskSubAgents
+    && snapshot.taskSubAgentsMarkedCompleted
+    && !isRunArtifactCleared(leadSessionId, 'taskSubAgents')
+  ) {
+    clearRunArtifact(leadSessionId, 'taskSubAgents');
+    clearedAny = true;
+  }
+
+  if (
+    snapshot.hasTeam
+    && snapshot.teamMarkedCompleted
+    && !isRunArtifactCleared(leadSessionId, 'team')
+  ) {
+    clearRunArtifact(leadSessionId, 'team');
+    clearedAny = true;
+  }
+
+  if (isRunSidebarHidden(leadSessionId, plans)) {
+    clearExecutionView();
+  }
+
+  return clearedAny;
+}
+
+/** @deprecated alias */
+export function maybeClearCompletedLeadRunDisplay(
+  leadSessionId: string,
+  plans?: LeadRunPlanSnapshot,
+): boolean {
+  return maybeClearCompletedRunArtifacts(leadSessionId, plans);
 }
 
 export function isLeadRunDisplayFullyCompleted(
   leadSessionId: string,
   plans?: LeadRunPlanSnapshot,
 ): boolean {
-  const runStatus = useSessionStore.getState().sessionRunStatus[leadSessionId];
-  if (runStatus !== 'idle' && runStatus !== 'error') return false;
-
-  const { workers, tasks, taskSubAgents, hadArtifacts } = collectRunDisplayItems(leadSessionId, plans);
-  if (!hadArtifacts) return true;
-
-  if (workers.length > 0 && !workers.every((member) => member.status === 'completed')) {
-    return false;
-  }
-
-  if (tasks.length > 0 && !tasks.every((task) => task.status === 'completed')) {
-    return false;
-  }
-
-  if (taskSubAgents.length > 0 && !taskSubAgents.every((agent) => agent.status === 'completed')) {
-    return false;
-  }
-
-  if (plans) {
-    const leadPlan = plans.sessionPlans[leadSessionId];
-    if (!planStepsAllCompleted(leadPlan)) return false;
-
-    for (const agent of taskSubAgents) {
-      if (!planStepsAllCompleted(plans.subAgentPlans[agent.id])) return false;
-    }
-  }
-
+  const snapshot = evaluateLeadRunArtifacts(leadSessionId, plans);
+  if (!snapshot.leadRunEnded) return false;
+  if (snapshot.hasPlan && !snapshot.planMarkedCompleted) return false;
+  if (snapshot.hasTaskSubAgents && !snapshot.taskSubAgentsMarkedCompleted) return false;
+  if (snapshot.hasTeam && !snapshot.teamMarkedCompleted) return false;
   return true;
-}
-
-export function isRunSidebarHidden(leadSessionId: string): boolean {
-  const { runSidebarCleared, sessionRunStatus } = useSessionStore.getState();
-  if (!runSidebarCleared[leadSessionId]) return false;
-  const runStatus = sessionRunStatus[leadSessionId];
-  return runStatus === 'idle' || runStatus === 'error';
-}
-
-export function clearLeadSessionRunDisplay(leadSessionId: string): void {
-  if (!leadSessionId) return;
-  useSessionStore.getState().clearSubAgentsForLeadSession(leadSessionId);
-  useSessionStore.getState().markRunSidebarCleared(leadSessionId);
-  useTeamStore.getState().clearTeamRunScope(leadSessionId);
-  useTeamStore.getState().deactivateSessionTeam(leadSessionId);
-  planClearHandler?.(leadSessionId);
-  clearExecutionView();
 }
 
 export function resetLeadSessionForNewRun(leadSessionId: string): void {
   if (!leadSessionId) return;
-  useSessionStore.getState().markRunSidebarVisible(leadSessionId);
+  useSessionStore.getState().captureLeadRunExcludedChildren(leadSessionId);
+  useSessionStore.getState().resetRunArtifactsCleared(leadSessionId);
   useSessionStore.getState().clearSubAgentsForLeadSession(leadSessionId);
   useTeamStore.getState().clearTeamRunScope(leadSessionId);
   planClearHandler?.(leadSessionId);
   clearExecutionView();
-}
-
-export function maybeClearCompletedLeadRunDisplay(
-  leadSessionId: string,
-  plans?: LeadRunPlanSnapshot,
-): boolean {
-  if (!leadSessionId || isRunSidebarHidden(leadSessionId)) return false;
-  if (!isLeadRunDisplayFullyCompleted(leadSessionId, plans)) return false;
-  clearLeadSessionRunDisplay(leadSessionId);
-  return true;
 }

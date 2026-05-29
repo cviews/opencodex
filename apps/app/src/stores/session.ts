@@ -16,7 +16,11 @@ import {
   isLeadSessionAwaitingDelegation,
   resolveLeadSessionIdForWorkerSession,
 } from '../services/teamLeadSessionStatus';
-import { resetLeadSessionForNewRun, isLeadSessionId } from '../services/sessionRunDisplayLifecycle';
+import {
+  resetLeadSessionForNewRun,
+  isLeadSessionId,
+  maybeClearCompletedRunArtifacts,
+} from '../services/sessionRunDisplayLifecycle';
 import { useMessageStore } from './message';
 
 export type SubAgent = SubAgentItem;
@@ -38,10 +42,13 @@ interface SessionState {
   activeSessionId: string | null;
   selectedSubAgentId: string | null;
   sessionRunStatus: Record<string, SessionRunStatus>;
-  /** Timestamp (ms) when the lead session last started a new run after idle. */
-  sessionRunStartedAt: Record<string, number>;
-  /** Sidebar team/plan/task artifacts cleared after a fully completed run. */
-  runSidebarCleared: Record<string, boolean>;
+  /**
+   * Child session IDs that already existed when the current lead run started.
+   * Used to scope sidebar/task sub-agents to this run without wall-clock time.
+   */
+  leadRunExcludedChildSessionIds: Record<string, string[]>;
+  /** Per-session sidebar blocks cleared after run end (plan / taskSubAgents / team). */
+  runArtifactsCleared: Record<string, Partial<Record<'plan' | 'taskSubAgents' | 'team', boolean>>>;
   loading: boolean;
   error: string | null;
 
@@ -65,8 +72,11 @@ interface SessionState {
   fetchSessions: () => Promise<void>;
   fetchSubAgents: (parentSessionId?: string) => Promise<void>;
   clearSubAgentsForLeadSession: (leadSessionId: string) => void;
-  markRunSidebarCleared: (leadSessionId: string) => void;
-  markRunSidebarVisible: (leadSessionId: string) => void;
+  markRunArtifactCleared: (leadSessionId: string, kind: 'plan' | 'taskSubAgents' | 'team') => void;
+  resetRunArtifactsCleared: (leadSessionId: string) => void;
+  isRunArtifactCleared: (leadSessionId: string, kind: 'plan' | 'taskSubAgents' | 'team') => boolean;
+  captureLeadRunExcludedChildren: (leadSessionId: string) => void;
+  clearLeadRunExcludedChildren: (leadSessionId: string) => void;
   subscribeToEvents: () => () => void;
 }
 
@@ -307,8 +317,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   activeSessionId: null,
   selectedSubAgentId: null,
   sessionRunStatus: {},
-  sessionRunStartedAt: {},
-  runSidebarCleared: {},
+  leadRunExcludedChildSessionIds: {},
+  runArtifactsCleared: {},
   loading: false,
   error: null,
 
@@ -339,8 +349,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       activeSessionId: restored.activeSessionId,
       selectedSubAgentId: restored.selectedSubAgentId,
       sessionRunStatus: restored.sessionRunStatus,
-      sessionRunStartedAt: {},
-      runSidebarCleared: {},
+      leadRunExcludedChildSessionIds: {},
+      runArtifactsCleared: {},
       loading: false,
       error: null,
     });
@@ -457,23 +467,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     set((state) => {
       const previousStatus = state.sessionRunStatus[sessionId];
-      let sessionRunStartedAt = state.sessionRunStartedAt;
       let subAgents = applyRunLifecycleToSubAgents(
         state.subAgents,
         sessionId,
         resolvedStatus,
         previousStatus,
       );
-
-      if (
-        resolvedStatus === 'running'
-        && (previousStatus === 'idle' || previousStatus === 'error' || previousStatus === undefined)
-      ) {
-        sessionRunStartedAt = { ...sessionRunStartedAt, [sessionId]: Date.now() };
-      } else if (resolvedStatus === 'idle' || resolvedStatus === 'error') {
-        const { [sessionId]: _removed, ...rest } = sessionRunStartedAt;
-        sessionRunStartedAt = rest;
-      }
 
       const sessionRunStatus = { ...state.sessionRunStatus, [sessionId]: resolvedStatus };
       const patchedSubAgents = patchSubAgentStatusFromRunStatus(subAgents, sessionId, resolvedStatus);
@@ -483,7 +482,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (!currentPath) {
         return {
           sessionRunStatus,
-          sessionRunStartedAt,
           subAgents,
           selectedSubAgentId,
         };
@@ -491,7 +489,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const previous = state.byProject[currentPath] ?? emptySessionSnapshot();
       return {
         sessionRunStatus,
-        sessionRunStartedAt,
         subAgents,
         selectedSubAgentId,
         byProject: persistProjectSnapshot(state.byProject, currentPath, {
@@ -511,6 +508,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       && isLeadSessionId(sessionId)
     ) {
       resetLeadSessionForNewRun(sessionId);
+    }
+    if (
+      (resolvedStatus === 'idle' || resolvedStatus === 'error')
+      && isLeadSessionId(sessionId)
+    ) {
+      maybeClearCompletedRunArtifacts(sessionId);
     }
   },
   setActiveSession: (id) => {
@@ -669,17 +672,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     try {
       const directory = useProjectStore.getState().currentProject.path || undefined;
       const fresh = await opencodeSession.fetchSubAgents(directory, [parentSessionId]);
-      const runStartedAt = get().sessionRunStartedAt[parentSessionId];
       const runStatus = get().sessionRunStatus[parentSessionId];
-      const sidebarHidden =
-        !!get().runSidebarCleared[parentSessionId]
-        && (runStatus === 'idle' || runStatus === 'error');
-      if (sidebarHidden) return;
-      const filtered = runStartedAt
-        ? fresh.filter((agent) => {
-            if (agent.status !== 'completed') return true;
-            return agent.createdAt != null && agent.createdAt >= runStartedAt;
-          })
+      const taskSubAgentsCleared =
+        !!get().runArtifactsCleared[parentSessionId]?.taskSubAgents;
+      if (taskSubAgentsCleared && (runStatus === 'idle' || runStatus === 'error')) return;
+      const excluded = get().leadRunExcludedChildSessionIds[parentSessionId];
+      const filtered = excluded?.length
+        ? fresh.filter((agent) => !new Set(excluded).has(agent.sessionId))
         : fresh;
       set((state) => ({
         subAgents: [
@@ -714,19 +713,62 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
-  markRunSidebarCleared: (leadSessionId) => {
+  markRunArtifactCleared: (leadSessionId, kind) => {
     if (!leadSessionId) return;
     set((state) => ({
-      runSidebarCleared: { ...state.runSidebarCleared, [leadSessionId]: true },
+      runArtifactsCleared: {
+        ...state.runArtifactsCleared,
+        [leadSessionId]: {
+          ...state.runArtifactsCleared[leadSessionId],
+          [kind]: true,
+        },
+      },
     }));
   },
 
-  markRunSidebarVisible: (leadSessionId) => {
+  resetRunArtifactsCleared: (leadSessionId) => {
     if (!leadSessionId) return;
     set((state) => {
-      if (!state.runSidebarCleared[leadSessionId]) return state;
-      const { [leadSessionId]: _removed, ...runSidebarCleared } = state.runSidebarCleared;
-      return { runSidebarCleared };
+      if (!state.runArtifactsCleared[leadSessionId]) return state;
+      const { [leadSessionId]: _removed, ...runArtifactsCleared } = state.runArtifactsCleared;
+      return { runArtifactsCleared };
+    });
+  },
+
+  isRunArtifactCleared: (leadSessionId, kind) => {
+    return !!get().runArtifactsCleared[leadSessionId]?.[kind];
+  },
+
+  captureLeadRunExcludedChildren: (leadSessionId) => {
+    if (!leadSessionId) return;
+    set((state) => {
+      const ids = new Set<string>();
+      for (const agent of state.subAgents) {
+        if (agent.parentSessionId === leadSessionId) {
+          ids.add(agent.sessionId);
+        }
+      }
+      for (const session of state.sessions) {
+        if (session.parentID?.trim() === leadSessionId) {
+          ids.add(session.id);
+        }
+      }
+      return {
+        leadRunExcludedChildSessionIds: {
+          ...state.leadRunExcludedChildSessionIds,
+          [leadSessionId]: [...ids],
+        },
+      };
+    });
+  },
+
+  clearLeadRunExcludedChildren: (leadSessionId) => {
+    if (!leadSessionId) return;
+    set((state) => {
+      if (!state.leadRunExcludedChildSessionIds[leadSessionId]) return state;
+      const { [leadSessionId]: _removed, ...leadRunExcludedChildSessionIds } =
+        state.leadRunExcludedChildSessionIds;
+      return { leadRunExcludedChildSessionIds };
     });
   },
 

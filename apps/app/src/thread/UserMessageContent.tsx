@@ -1,7 +1,10 @@
 import { useMemo } from 'react';
 import { AtSign, Sparkles, Users } from 'lucide-react';
+import { MarkdownRenderer } from '../rendering/MarkdownRenderer';
+import { useAgentStore } from '../stores/agent';
 import type { ReferenceKind } from './composer/referenceChip';
 import { ReferenceChip } from './ReferenceChip';
+import { buildDisplayTokenCatalog } from './displayTokenCatalog';
 import { parseDisplaySegments } from './displayTokens';
 
 interface UserMessageContentProps {
@@ -28,10 +31,21 @@ function MentionChip({ kind, label }: { kind: 'agent' | 'model' | 'skill' | 'tea
 }
 
 export function UserMessageContent({ content }: UserMessageContentProps) {
-  const segments = useMemo(() => parseDisplaySegments(content), [content]);
+  const agents = useAgentStore((s) => s.agents);
+  const teams = useAgentStore((s) => s.teams);
+  const segments = useMemo(() => {
+    const catalog = buildDisplayTokenCatalog();
+    return parseDisplaySegments(content, catalog);
+  }, [content, agents, teams]);
+
+  const hasChips = segments.some((seg) => seg.type !== 'text');
 
   return (
-    <div className="message-user-content whitespace-pre-wrap break-words text-[14px] leading-[1.65] text-[var(--color-msg-text)]">
+    <div
+      className={`message-user-content break-words text-[14px] leading-[1.65] text-[var(--color-msg-text)]${
+        hasChips ? '' : ' whitespace-pre-wrap'
+      }`}
+    >
       {segments.map((seg, i) => {
         if (seg.type === 'mention') {
           return <MentionChip key={i} kind={seg.kind} label={seg.value} />;
@@ -39,7 +53,14 @@ export function UserMessageContent({ content }: UserMessageContentProps) {
         if (seg.type === 'reference') {
           return <ReferenceChip key={i} kind={seg.kind as ReferenceKind} label={seg.value} />;
         }
-        return <span key={i}>{seg.value}</span>;
+        if (!seg.value) return null;
+        return (
+          <MarkdownRenderer
+            key={i}
+            content={seg.value}
+            cacheKey={`user-msg-${i}`}
+          />
+        );
       })}
     </div>
   );
